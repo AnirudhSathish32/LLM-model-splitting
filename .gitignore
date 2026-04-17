@@ -1,0 +1,10 @@
+# LLM / large artifacts
+llama-3b/
+llama-8b/
+*.bin
+*.pt
+*.safetensors
+*.gguf
+
+# environments
+venv/
