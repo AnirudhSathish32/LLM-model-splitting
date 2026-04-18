@@ -11,6 +11,10 @@ Run on Machine B (worker):
 """
 
 import os
+
+gloo_interface = os.environ.get("GLOO_SOCKET_IFNAME", "eth0")
+os.environ["GLOO_SOCKET_IFNAME"] = gloo_interface
+
 import torch
 import torch.distributed as dist
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -25,7 +29,11 @@ QUERY = "Explain how pipeline parallelism works in large language models."
 
 def setup_distributed():
     """Initialize the distributed process group using env vars set by torchrun."""
-    dist.init_process_group(backend="gloo")  # gloo works over ethernet; use nccl if both machines have CUDA p2p
+    dist.init_process_group(backend="gloo",
+                            init_method=f"tcp://192.168.4.37:29500",
+                            world_size=int(os.environ["WORLD_SIZE"]),
+                            rank=int(os.environ["RANK"]),
+                            )  # gloo works over ethernet; use nccl if both machines have CUDA p2p
     rank = dist.get_rank()
     world_size = dist.get_world_size()
     return rank, world_size

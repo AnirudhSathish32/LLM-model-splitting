@@ -1,8 +1,10 @@
 #!/bin/bash
 # Run this on Machine B (the worker — needs the model downloaded too,
 # or point MODEL_PATH at a network share / copied model folder)
+export USE_LIBUV=0
+export GLOO_SOCKET_INFAME=wifi0
 
-MASTER_IP="192.168.100.1"   # Machine A's IP — same on both scripts
+MASTER_IP="192.168.4.37"   # Machine A's IP — same on both scripts
 MASTER_PORT="29500"
 
 echo "=== Machine B (Worker) ==="

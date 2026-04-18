@@ -1,10 +1,13 @@
 #!/bin/bash
 # Run this on Machine A (the one with the model downloaded)
 # Make sure Machine B is already running launch_machine_b.sh before running this
+export USE_LIBUV=0
+export GLOO_SOCKET_INFAME=eth0
 
-MASTER_IP="192.168.100.1"   # Machine A's static IP (set during ethernet setup)
+
+MASTER_IP="192.168.4.37"   # Machine A's static IP (set during ethernet setup)
 MASTER_PORT="29500"
-MODEL_PATH="./llama-8b"
+MODEL_PATH="./llama-3b"
 
 echo "=== Machine A (Master) ==="
 echo "Master IP: $MASTER_IP"
