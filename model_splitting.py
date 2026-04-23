@@ -188,17 +188,30 @@ def capture_full_pass():
 
 def capture_stopped_pass():
     """
-    Runs the model and stops immediately after layer 14 finishes.
-    Layers 14-28 never execute.
-    Returns the layer 14 output and the position info needed to resume.
+    Executes the model up to the specified stopping layer and captures the 
+    state required to resume execution downstream.
 
-    Position ids and position embeddings are static constants generated at layer 0 
-    and carried through each layer
+    This function interrupts the model's forward pass after layer 14 finishes,
+    preventing the execution of all subsequent layers (15-28). It extracts
+    the 'hand-off' package containing the hidden state and the necessary 
+    positional context to ensure the resumption remains mathematically 
+    consistent with the original pass.
 
-    If we want to create a valid input for layer 15 we need the layer 0 information
+    Rationale for Positional Context:
+    Transformers require positional information (position_ids and 
+    position_embeddings) to interpret the sequence of tokens. This metadata 
+    is computed globally at Layer 0 and is static throughout the model. 
+    Because Layer 15 (the resumption point) is decoupled from the initial 
+    input process, it lacks access to this original context. We must 
+    explicitly capture and inject these constants to ensure the attention 
+    mechanisms and RoPE (Rotary Position Embeddings) calculations function 
+    correctly when the partial pass resumes.
 
-    
-    
+    Returns:
+        tuple: A triplet containing:
+            - hidden_state (Tensor): The 3D hidden state output from layer 14.
+            - position_ids (Tensor): The original positional identifiers.
+            - position_embeddings (tuple): The (cos, sin) cache tables.
 
     """
     captured = {}
@@ -239,8 +252,21 @@ def capture_stopped_pass():
 
 def capture_partial_pass(stop_layer_output, position_ids, position_embeddings):
     """
-    Performs forward pass only on the starting layer to get its output
+    Performs forward pass only on the starting layer
     We use to confirm if the input package works
+
+    Args:
+        stop_layer_output (Tensor): The 3D hidden state captured from the 
+            stopping layer.
+        position_ids (Tensor): The positional identifiers captured from 
+            the global model state.
+        position_embeddings (tuple): The (cos, sin) RoPE tables required 
+            for rotary positional calculations.
+
+    Returns:
+        Tensor: The 3D hidden state resulting from the forward pass of the 
+            resumption layer.
+
     """
     
     with torch.no_grad():
@@ -261,7 +287,7 @@ if __name__ == "__main__":
 
     
     print("Stopping Layer match:", torch.allclose(full_stopping_layer, stopped_stop_layer))
-    # torch.allclose is a boolean method which checks to see if two tensors are
-
+    # torch.allclose is a boolean method which checks to see if two tensors are mathematically identical
 
     print("Starting Layer match:", torch.allclose(full_starting_layer, partial_start_layer))
+    # torch.allclose is a boolean method which checks to see if two tensors are mathematically identical
