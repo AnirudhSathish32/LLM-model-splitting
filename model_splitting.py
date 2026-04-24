@@ -43,7 +43,7 @@ model = AutoModelForCausalLM.from_pretrained(model_path)
 tokenizer = AutoTokenizer.from_pretrained(model_path)
 #Loading Tokenizer
 
-prompt = "Hello world"
+prompt = "Hello World"
 #Loading Prompt
 
 inputs = tokenizer(prompt, return_tensors="pt")
@@ -110,7 +110,7 @@ def capture_full_pass():
         # Captures hidden state data
 
         if output[0].dim() == 2:
-            captured["stopping"] = captured["stopping"].unsqueeze(0)  
+            captured["stopping"] = captured["stopping"].unsqueeze(0)
         
         # Fixes dimensions of the output 
 
@@ -121,7 +121,7 @@ def capture_full_pass():
         What is a forward hook?
             A user-defined function that allows us to "register" a layer
             PyTorch is instructed to call this function every time a layer calls the forward() method
-
+        
         Two types of forward hooks 
             Forward pre-hook: Executes before the layer does its math we can see the input data
             
@@ -151,6 +151,9 @@ def capture_full_pass():
             captured["starting"] = captured["starting"].unsqueeze(0) 
         # Fixes dimensions of the output 
         # Input of the next layer wants a 3 dimensional shape but hook returns a 2D shape
+        # unsqueeze simply adds 1 to the batch dimension
+        # [batch, tokens, dimensions]
+        # sometimes the data will only contain [tokens, dimensions]
 
         print(captured["starting"].shape)
 
@@ -285,7 +288,6 @@ if __name__ == "__main__":
     stopped_stop_layer, pos_ids, pos_emb = capture_stopped_pass()
     partial_start_layer = capture_partial_pass(stopped_stop_layer, pos_ids, pos_emb)
 
-    
     print("Stopping Layer match:", torch.allclose(full_stopping_layer, stopped_stop_layer))
     # torch.allclose is a boolean method which checks to see if two tensors are mathematically identical
 
