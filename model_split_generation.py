@@ -16,6 +16,7 @@ prompt = tokenizer.apply_chat_template(
     tokenize=False,
     add_generation_prompt=True
 )
+
 #Loading prompt
 inputs = tokenizer(prompt, return_tensors="pt")
 #Tokenizing prompt into input tensors
@@ -24,6 +25,7 @@ model.eval()
 
 stopping_layer = 14
 starting_layer = stopping_layer + 1
+tokens_to_generate = 200
 
 
 def perform_full_generation():
@@ -32,20 +34,20 @@ def perform_full_generation():
     with torch.no_grad():
         output_ids = model.generate(
             **inputs,
-            max_new_tokens=50,
+            max_new_tokens=tokens_to_generate,
             do_sample=True,
             temperature=0.7
         )
     response = tokenizer.decode(output_ids[0], skip_special_tokens=False)
     return print(response)
 
-def perform_split_generation(max_new_tokens):
+def perform_split_generation(tokens_to_generate):
     generated_token_ids = []
     
     # Start with the original input ids
     current_input_ids = inputs["input_ids"]
     
-    for _ in range(max_new_tokens):
+    for _ in range(tokens_to_generate):
         
         # ---- Machine A: layers 1-14 ----
         captured = {}
@@ -109,4 +111,4 @@ if __name__ == "__main__":
     print("=====================FULL GENERATION============================")
     perform_full_generation()
     print("=====================SPLIT GENERATION============================")
-    perform_split_generation(50)
+    perform_split_generation(tokens_to_generate)
