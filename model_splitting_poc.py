@@ -39,17 +39,14 @@ model_path = "./llama-3b"
 
 model = AutoModelForCausalLM.from_pretrained(model_path)
 #Loading model 
-
 tokenizer = AutoTokenizer.from_pretrained(model_path)
 #Loading Tokenizer
-
 prompt = "Hello World"
-#Loading Prompt
-
+#Loading prompt
 inputs = tokenizer(prompt, return_tensors="pt")
 #Tokenizing prompt into input tensors
-
 model.eval()
+#neural network enters evaluation mode so it behaves predictably
 
 """
 Defining Split Boundary: 
@@ -59,13 +56,15 @@ Start Layer defines the beginning of the second split
 
 """
 
-stopping_layer = 14
+"write each layer output into a file"
+"Generation"
+
+
+stopping_layer = 14 
 #Defining Stop Layer 
 
-starting_layer = 15
+starting_layer = 15 
 #Defining start layer
-
-
 
 def capture_full_pass():
     """
@@ -121,7 +120,7 @@ def capture_full_pass():
         What is a forward hook?
             A user-defined function that allows us to "register" a layer
             PyTorch is instructed to call this function every time a layer calls the forward() method
-        
+
         Two types of forward hooks 
             Forward pre-hook: Executes before the layer does its math we can see the input data
             
@@ -155,7 +154,7 @@ def capture_full_pass():
         # [batch, tokens, dimensions]
         # sometimes the data will only contain [tokens, dimensions]
 
-        print(captured["starting"].shape)
+        #print(captured["starting"].shape)
 
     h1 = model.model.layers[stopping_layer - 1].register_forward_hook(hook_layer_stopping)
     # We call model.model.layer[x] to access a specific model layer
@@ -290,6 +289,7 @@ if __name__ == "__main__":
 
     print("Stopping Layer match:", torch.allclose(full_stopping_layer, stopped_stop_layer))
     # torch.allclose is a boolean method which checks to see if two tensors are mathematically identical
-
     print("Starting Layer match:", torch.allclose(full_starting_layer, partial_start_layer))
     # torch.allclose is a boolean method which checks to see if two tensors are mathematically identical
+
+    

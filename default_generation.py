@@ -6,7 +6,7 @@ model_path = "./llama-3b"
 model = AutoModelForCausalLM.from_pretrained(model_path, output_hidden_states=True)
 tokenizer = AutoTokenizer.from_pretrained(model_path)
 
-#model.eval()
+model.eval()
 
 prompt = "Hello World"
 
