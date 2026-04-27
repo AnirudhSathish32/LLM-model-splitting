@@ -4,12 +4,21 @@ import os
 
 model_path = "./llama-3b"
 
-model = AutoModelForCausalLM.from_pretrained(model_path)
+device = ""
+
+if torch.cuda.is_available():
+    device = "cuda"
+else:
+    device = "cpu"
+
+model = AutoModelForCausalLM.from_pretrained(
+    model_path,
+    device_map=device)
 #Loading model 
 tokenizer = AutoTokenizer.from_pretrained(model_path)
 #Loading Tokenizer
 messages = [
-    {"role": "user", "content": "how many planets are in the solar system"}
+    {"role": "user", "content": "Best Alfredo pasta recipe"}
 ]
 # Loading context
 prompt = tokenizer.apply_chat_template(
