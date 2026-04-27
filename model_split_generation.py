@@ -17,7 +17,6 @@ prompt = tokenizer.apply_chat_template(
     tokenize=False,
     add_generation_prompt=True
 )
-
 #Loading prompt
 inputs = tokenizer(prompt, return_tensors="pt")
 #Tokenizing prompt into input tensors
@@ -35,6 +34,22 @@ def save_handoff_package(hidden, position_embeddings, position_ids, save_dir="./
     torch.save(position_embeddings[0], f"{save_dir}/cos.pt")
     torch.save(position_embeddings[1], f"{save_dir}/sin.pt")
     torch.save(position_ids, f"{save_dir}/position_ids.pt")
+
+def load_handoff_package(save_dir="./handoff"):
+    device = ""
+
+    if torch.cuda.is_available():
+        device = "cuda"
+    else:
+        device = "cpu"
+
+    hidden = torch.load(f"{save_dir}/hidden.pt").to(device)
+    cos = torch.load(f"{save_dir}/cos.pt").to(device)
+    sin = torch.load(f"{save_dir}/sin.pt").to(device)
+    position_embeddings = (cos, sin)
+    position_ids = torch.load(f"{save_dir}/position_ids.pt").to(device)
+
+    return hidden, position_embeddings, position_ids
 
 
 def perform_full_generation():
@@ -126,6 +141,9 @@ def perform_split_generation(tokens_to_generate):
         save_handoff_package(hidden, position_embeddings, position_ids)
         #export captured["position_ids"], captured["position_embeddings"] and captured["hidden"]
 
+        hidden, position_embeddings, position_ids = load_handoff_package()
+        #load file into memory
+
         next_token_id = split_2(hidden, position_embeddings, position_ids)
         #perform split 2 and generate the next token
 
@@ -141,6 +159,8 @@ def perform_split_generation(tokens_to_generate):
 
         current_input_ids = torch.cat([current_input_ids, next_token_id.unsqueeze(0)], dim=-1)
         #Append new token to input for next pass
+
+        #next step when len(current_input_ids) increases we call machine A to run its half  
 
     response = tokenizer.decode(generated_token_ids, skip_special_tokens=True)
     return print(response)
