@@ -1,5 +1,6 @@
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
+import os
 
 model_path = "./llama-3b"
 
@@ -27,6 +28,14 @@ stopping_layer = 14
 starting_layer = stopping_layer + 1
 tokens_to_generate = 200
 
+def save_handoff_package(hidden, position_embeddings, position_ids, save_dir="./handoff"):
+    os.makedirs(save_dir, exist_ok=True)
+    
+    torch.save(hidden, f"{save_dir}/hidden.pt")
+    torch.save(position_embeddings[0], f"{save_dir}/cos.pt")
+    torch.save(position_embeddings[1], f"{save_dir}/sin.pt")
+    torch.save(position_ids, f"{save_dir}/position_ids.pt")
+
 
 def perform_full_generation():
     inputs = tokenizer(prompt, return_tensors="pt")
@@ -41,6 +50,68 @@ def perform_full_generation():
     response = tokenizer.decode(output_ids[0], skip_special_tokens=False)
     return print(response)
 
+def split_1(current_input_ids):
+    """
+    ---- Machine A ----
+    First Split
+
+    """
+    captured = {}
+    def hook_fn(module, input, output):
+        hidden = output[0].detach().clone()
+        if hidden.dim() == 2:
+            hidden = hidden.unsqueeze(0)
+        captured["hidden"] = hidden
+        raise StopIteration
+    
+    def hook_pos(module, args, kwargs):
+        cos, sin = kwargs.get("position_embeddings")
+        captured["position_embeddings"] = (cos.detach().clone(), sin.detach().clone())
+        captured["position_ids"] = kwargs.get("position_ids")
+
+    h1 = model.model.layers[stopping_layer - 1].register_forward_hook(hook_fn)
+    h2 = model.model.layers[stopping_layer - 1].register_forward_pre_hook(hook_pos, with_kwargs=True)
+
+    try:
+        with torch.no_grad():
+            model(input_ids=current_input_ids)
+    except StopIteration:
+        pass
+
+    h1.remove()
+    h2.remove()
+
+    hidden = captured["hidden"]
+    position_embeddings = captured["position_embeddings"]
+    position_ids = captured["position_ids"]
+
+    return hidden, position_embeddings, position_ids
+
+def split_2(hidden, position_embeddings, position_ids):
+    """
+    ---- Machine B ----
+    Second Split 
+    """
+
+    with torch.no_grad():
+        x = hidden
+        for i in range(starting_layer - 1, len(model.model.layers)):
+            x = model.model.layers[i](
+                x,
+                position_ids= position_ids,
+                position_embeddings=position_embeddings,
+            )[0]
+            if x.dim() == 2:
+                x = x.unsqueeze(0)
+
+        x = model.model.norm(x)
+        logits = model.lm_head(x)
+
+        # ---- Pick next token ----
+        next_token_id = torch.argmax(logits[:, -1, :], dim=-1)
+
+    return  next_token_id
+
 def perform_split_generation(tokens_to_generate):
     generated_token_ids = []
     
@@ -49,50 +120,17 @@ def perform_split_generation(tokens_to_generate):
     
     for _ in range(tokens_to_generate):
         
-        # ---- Machine A: layers 1-14 ----
-        captured = {}
-        def hook_fn(module, input, output):
-            hidden = output[0].detach().clone()
-            if hidden.dim() == 2:
-                hidden = hidden.unsqueeze(0)
-            captured["hidden"] = hidden
-            raise StopIteration
+        hidden, position_embeddings, position_ids = split_1(current_input_ids)
+        # perform split 1
         
-        def hook_pos(module, args, kwargs):
-            cos, sin = kwargs.get("position_embeddings")
-            captured["position_embeddings"] = (cos.detach().clone(), sin.detach().clone())
-            captured["position_ids"] = kwargs.get("position_ids")
+        save_handoff_package(hidden, position_embeddings, position_ids)
+        #export captured["position_ids"], captured["position_embeddings"] and captured["hidden"]
 
-        h1 = model.model.layers[stopping_layer - 1].register_forward_hook(hook_fn)
-        h2 = model.model.layers[stopping_layer - 1].register_forward_pre_hook(hook_pos, with_kwargs=True)
+        next_token_id = split_2(hidden, position_embeddings, position_ids)
+        #perform split 2 and generate the next token
 
-        try:
-            with torch.no_grad():
-                model(input_ids=current_input_ids)
-        except StopIteration:
-            pass
-
-        h1.remove()
-        h2.remove()
-
-        # ---- Machine B: layers 15-28 ----
-        with torch.no_grad():
-            x = captured["hidden"]
-            for i in range(starting_layer - 1, len(model.model.layers)):
-                x = model.model.layers[i](
-                    x,
-                    position_ids=captured["position_ids"],
-                    position_embeddings=captured["position_embeddings"],
-                )[0]
-                if x.dim() == 2:
-                    x = x.unsqueeze(0)
-
-            x = model.model.norm(x)
-            logits = model.lm_head(x)
-
-        # ---- Pick next token ----
-        next_token_id = torch.argmax(logits[:, -1, :], dim=-1)
         generated_token_ids.append(next_token_id.item())
+        #Add this to the generated tokens list
 
         # ---- Check if model is done ----
         eos_ids = tokenizer.eos_token_id
@@ -101,8 +139,8 @@ def perform_split_generation(tokens_to_generate):
         if next_token_id.item() in eos_ids:
             break
 
-        # ---- Append new token to input for next pass ----
         current_input_ids = torch.cat([current_input_ids, next_token_id.unsqueeze(0)], dim=-1)
+        #Append new token to input for next pass
 
     response = tokenizer.decode(generated_token_ids, skip_special_tokens=True)
     return print(response)
