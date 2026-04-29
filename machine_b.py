@@ -4,41 +4,28 @@ import time
 import os
 import psutil
 
-
 model_path = "./llama-3b"
-
-device = ""
-
-if torch.cuda.is_available():
-    device = "cuda"
-else:
-    device = "cpu"
-
-model = AutoModelForCausalLM.from_pretrained(
-    model_path,
-    device_map=device)
-#Loading model 
+device = "cuda" if torch.cuda.is_available() else "cpu"
 tokenizer = AutoTokenizer.from_pretrained(model_path)
-#Loading Tokenizer
-messages = [
-    {"role": "user", "content": "Best Alfredo pasta recipe"}
-]
-# Loading context
-prompt = tokenizer.apply_chat_template(
-    messages,
-    tokenize=False,
-    add_generation_prompt=True
-)
-#Loading prompt
-inputs = tokenizer(prompt, return_tensors="pt")
-#Tokenizing prompt into input tensors
-model.eval()
-#neural network enters evaluation mode so it behaves predictably
-
 stopping_layer = 14
 starting_layer = stopping_layer + 1
 tokens_to_generate = 200
-captured = {}
+first_pass = True 
+
+# Machine B device map — only loads layers 14-27 plus norm and lm_head
+device_map = {"model.embed_tokens": "meta"}
+for i in range(28):
+    device_map[f"model.layers.{i}"] = device if i >= stopping_layer else "meta"
+device_map["model.norm"] = device
+device_map["lm_head"] = device
+
+model = AutoModelForCausalLM.from_pretrained(
+    model_path,
+    dtype=torch.bfloat16,
+    attn_implementation="eager",
+    device_map=device_map
+)
+model.eval()
 
 def get_system_stats(label):
     # CPU usage
@@ -62,26 +49,6 @@ def get_system_stats(label):
     else:
         print("GPU: not available")
 
-def hook_fn(module, input, output):
-        hidden = output[0].detach()
-        if hidden.dim() == 2:
-            hidden = hidden.unsqueeze(0)
-        captured["hidden"] = hidden
-        raise StopIteration
-    
-def hook_pos(module, args, kwargs):
-    cos, sin = kwargs.get("position_embeddings")
-    captured["position_embeddings"] = (cos.detach().clone(), sin.detach().clone())
-    captured["position_ids"] = kwargs.get("position_ids")
-    captured["cache_a"] = kwargs.get("past_key_value")
-
-def save_handoff_package(hidden, position_embeddings, position_ids, save_dir="./handoff"):
-    os.makedirs(save_dir, exist_ok=True)
-    torch.save(hidden, f"{save_dir}/hidden.pt")
-    torch.save(position_embeddings[0], f"{save_dir}/cos.pt")
-    torch.save(position_embeddings[1], f"{save_dir}/sin.pt")
-    torch.save(position_ids, f"{save_dir}/position_ids.pt")
-
 def load_handoff_package(save_dir="./handoff", first_pass=True):
     device = ""
 
@@ -100,42 +67,6 @@ def load_handoff_package(save_dir="./handoff", first_pass=True):
     else:
         hidden = torch.load(f"{save_dir}/hidden.pt").to(device)
         return hidden
-
-
-def perform_full_generation():
-    inputs = tokenizer(prompt, return_tensors="pt")
-
-    with torch.no_grad():
-        output_ids = model.generate(
-            **inputs,
-            max_new_tokens=tokens_to_generate,
-            do_sample=True,
-            temperature=0.7
-        )
-    response = tokenizer.decode(output_ids[0], skip_special_tokens=False)
-    get_system_stats("================= FULL GEN STATS ======================")
-    return print(response)
-
-def split_1(current_input_ids, cache_a=None):
-    """
-    ---- Machine A ----
-    First Split
-
-    """
-    try:
-        with torch.no_grad():
-            model(input_ids=current_input_ids,
-                past_key_values=cache_a,
-                use_cache=True,
-                return_dict=True)
-    except StopIteration:
-        pass
-    hidden = captured["hidden"]
-    position_embeddings = captured["position_embeddings"]
-    position_ids = captured["position_ids"]
-    cache_a = captured["cache_a"]
-
-    return hidden, position_embeddings, position_ids, cache_a
 
 def split_2(hidden, position_embeddings, position_ids, cache_b=None):
     """
@@ -176,7 +107,6 @@ def perform_split_generation(tokens_to_generate):
     # Start with the original input ids
     current_input_ids = inputs["input_ids"]
     
-    cache_a = None
     cache_b = None
     position_embeddings = None
     position_ids = None
@@ -189,14 +119,10 @@ def perform_split_generation(tokens_to_generate):
         # perform split 1
         
         if first_pass:
-            save_handoff_package(hidden, position_embeddings, position_ids)
-            #export captured["position_ids"], captured["position_embeddings"] and captured["hidden"]
-
             hidden, position_embeddings, position_ids = load_handoff_package(first_pass=first_pass)
             #load file into memory
 
         else:
-            save_handoff_package(hidden)
             hidden = load_handoff_package(first_pass)
 
         next_token_id, cache_b = split_2(hidden, position_embeddings, position_ids, cache_b)
@@ -221,12 +147,3 @@ def perform_split_generation(tokens_to_generate):
     response = tokenizer.decode(generated_token_ids, skip_special_tokens=False)
     get_system_stats("==================== SPLIT GEN STATS ============================")
     return print(response)
-
-if __name__ == "__main__":
-    start = time.time()
-    print("=====================FULL GENERATION============================")
-    perform_full_generation()
-    print("=====================SPLIT GENERATION============================")
-    perform_split_generation(tokens_to_generate)
-    end = time.time()
-    print(f"Total time: {end - start:.2f} seconds")

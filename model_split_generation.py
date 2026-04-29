@@ -1,5 +1,7 @@
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
+import time
+import psutil
 import os
 
 model_path = "./llama-3b"
@@ -36,6 +38,28 @@ stopping_layer = 14
 starting_layer = stopping_layer + 1
 tokens_to_generate = 200
 
+def get_system_stats(label):
+    # CPU usage
+    cpu_percent = psutil.cpu_percent(interval=0.1)
+    
+    # RAM usage
+    ram = psutil.Process(os.getpid()).memory_info().rss / 1e9
+    
+    print(f"\n--- {label} ---")
+    print(f"CPU usage:    {cpu_percent:.1f}%")
+    print(f"RAM usage:    {ram:.2f} GB")
+    
+    # GPU stats if available
+    if torch.cuda.is_available():
+        gpu_allocated = torch.cuda.memory_allocated() / 1e9
+        gpu_reserved  = torch.cuda.memory_reserved() / 1e9
+        gpu_total     = torch.cuda.get_device_properties(0).total_memory / 1e9
+        print(f"GPU allocated: {gpu_allocated:.2f} GB")
+        print(f"GPU reserved:  {gpu_reserved:.2f} GB")
+        print(f"GPU total:     {gpu_total:.2f} GB")
+    else:
+        print("GPU: not available")
+
 def save_handoff_package(hidden, position_embeddings, position_ids, save_dir="./handoff"):
     os.makedirs(save_dir, exist_ok=True)
     torch.save(hidden, f"{save_dir}/hidden.pt")
@@ -71,6 +95,7 @@ def perform_full_generation():
             temperature=0.7
         )
     response = tokenizer.decode(output_ids[0], skip_special_tokens=False)
+    get_system_stats("==================== FULL GEN STATS ============================")
     return print(response)
 
 def split_1(current_input_ids):
@@ -171,10 +196,14 @@ def perform_split_generation(tokens_to_generate):
         #next step when len(current_input_ids) increases we call machine A to run its half  
 
     response = tokenizer.decode(generated_token_ids, skip_special_tokens=False)
+    get_system_stats("==================== SPLIT GEN STATS ============================")
     return print(response)
 
 if __name__ == "__main__":
+    start = time.time()
     print("=====================FULL GENERATION============================")
     perform_full_generation()
     print("=====================SPLIT GENERATION============================")
     perform_split_generation(tokens_to_generate)
+    end = time.time()
+    print(f"Total time: {end - start:.2f} seconds")
