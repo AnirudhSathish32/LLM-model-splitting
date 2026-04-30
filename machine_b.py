@@ -101,22 +101,14 @@ def split_2(hidden, position_embeddings, position_ids, cache_b=None):
 
     return  next_token_id, cache_b
 
-def perform_split_generation(tokens_to_generate):
-    generated_token_ids = []
-    
-    # Start with the original input ids
-    current_input_ids = inputs["input_ids"]
+def run_machine_b(tokens_to_generate):
     
     cache_b = None
     position_embeddings = None
     position_ids = None
     first_pass = True
-    h1 = model.model.layers[stopping_layer - 1].register_forward_hook(hook_fn)
-    h2 = model.model.layers[stopping_layer - 1].register_forward_pre_hook(hook_pos, with_kwargs=True)
-    for _ in range(tokens_to_generate):
-        
-        hidden, position_embeddings, position_ids, cache_a = split_1(current_input_ids, cache_a)
-        # perform split 1
+    token_count = 0 
+    while token_count <= tokens_to_generate:
         
         if first_pass:
             hidden, position_embeddings, position_ids = load_handoff_package(first_pass=first_pass)
@@ -128,22 +120,15 @@ def perform_split_generation(tokens_to_generate):
         next_token_id, cache_b = split_2(hidden, position_embeddings, position_ids, cache_b)
         #perform split 2 and generate the next token
 
-        generated_token_ids.append(next_token_id.item())
-        #Add this to the generated tokens list
-
         # ---- Check if model is done ----
         eos_ids = tokenizer.eos_token_id
         if isinstance(eos_ids, int):
             eos_ids = [eos_ids]
         if next_token_id.item() in eos_ids:
+            # if we have detect eos/reached token count then we call machine A to start decoding the response by sending eos_detected = True
             break
-        
-        current_input_ids = torch.cat([current_input_ids, next_token_id.unsqueeze(0)], dim=-1)
-        #Append new token to input for next pass
+ 
+        # call machine A then return next_token_id from split 2 function
 
-        #next step when len(current_input_ids) increases we call machine A to run its half  
-    h1.remove()
-    h2.remove()
-    response = tokenizer.decode(generated_token_ids, skip_special_tokens=False)
     get_system_stats("==================== SPLIT GEN STATS ============================")
-    return print(response)
+    return

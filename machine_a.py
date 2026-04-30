@@ -2,7 +2,9 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, DynamicCache, Dyna
 import torch
 import time
 import os
+import socket 
 import psutil
+import io 
 
 model_path = "./llama-3b"
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -37,6 +39,24 @@ inputs = tokenizer(prompt, return_tensors="pt")
 inputs = {k: v.to(device) for k, v in inputs.items()}
 
 captured = {}
+
+def setup_machine_a_conn(host="0.0.0.0", port=65432):
+    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server_socket.bind((host, port))
+    server_socket.listen(1)
+    print(f"Machine A waiting for Machine B to connect on port {port}...")
+    conn, addr = server_socket.accept()
+    print(f"Machine B connected from {addr}")
+    return server_socket, conn
+
+def send_to_machine_b(conn, hidden, position_embeddings=None, position_ids=None):
+    buffer = io.BytesIO()
+    torch.save(hidden, buffer)
+    data = buffer.getvalue()
+    conn.sendall(len(data).to_bytes(8, byteorder="big"))
+    conn.sendall(data)
+
 
 def get_system_stats(label):
     # CPU usage
@@ -101,7 +121,7 @@ def split_1(current_input_ids, cache_a=None):
 
     return hidden, position_embeddings, position_ids, cache_a
 
-def perform_split_generation(tokens_to_generate):
+def run_machine_a(tokens_to_generate):
     generated_token_ids = []
     
     # Start with the original input ids
@@ -111,9 +131,12 @@ def perform_split_generation(tokens_to_generate):
     position_embeddings = None
     position_ids = None
     first_pass = True
+    token_count = 0 
+
     h1 = model.model.layers[stopping_layer - 1].register_forward_hook(hook_fn)
     h2 = model.model.layers[stopping_layer - 1].register_forward_pre_hook(hook_pos, with_kwargs=True)
-    for _ in range(tokens_to_generate):
+
+    while token_count < tokens_to_generate:
         
         hidden, position_embeddings, position_ids, cache_a = split_1(current_input_ids, cache_a)
         # perform split 1
@@ -127,5 +150,14 @@ def perform_split_generation(tokens_to_generate):
 
 
         # call machine_b
-        # next_token_id = split_2(hidden, position_embeddings, position_ids, cache_b)
-        #perform split 2 and generate the next token
+        
+        # next_token_id, eos_detected = run_machine_b(hidden, position_embeddings, position_ids, cache_b)
+        # call split_2 to generate next_token_id
+
+        # if eos_detected:
+            # break
+
+        #current_input_ids = torch.cat([current_input_ids, next_token_id.unsqueeze(0)], dim=-1)
+        #Append new token to input for next pass
+
+    response = tokenizer.decode(generated_token_ids, skip_special_tokens=False)
