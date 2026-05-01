@@ -8,3 +8,7 @@ llama-8b/
 
 # environments
 venv/
+venv_wsl/
+.venv/
+
+*.gitignore
