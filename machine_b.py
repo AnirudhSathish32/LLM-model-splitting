@@ -41,12 +41,20 @@ def recv_all(conn, length):
         data += packet
     return data
 
-def setup_machine_b():
-    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    print(f"Machine B connecting to Machine A at {MACHINE_A_TAILSCALE_IP}:{TAILSCALE_PORT}...")
-    client_socket.connect((MACHINE_A_TAILSCALE_IP, TAILSCALE_PORT))
-    print(f"Connected to Machine A")
-    return client_socket
+def setup_machine_b(retries=10, delay=3):
+    print(f"Machine B attempting to connect to {MACHINE_A_TAILSCALE_IP}:{TAILSCALE_PORT}")
+    for attempt in range(1, retries + 1):
+        try:
+            client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            print(f"Machine B connecting to Machine A at {MACHINE_A_TAILSCALE_IP}:{TAILSCALE_PORT}...")
+            client_socket.connect((MACHINE_A_TAILSCALE_IP, TAILSCALE_PORT))
+            print(f"Connected to Machine A")
+            return client_socket
+        except ConnectionRefusedError:
+            print(f"Attempt {attempt}/{retries} - Machine A not ready yet, retrying in {delay}s...")
+            client_socket.close()
+            time.sleep(delay)
+    raise ConnectionError(f"Could not connect to Machine A after {retries} attempts. Is Machine A running?")
 
 def load_machine_a_data(conn):
     length = int.from_bytes(recv_all(conn, 8), byteorder="big")
@@ -145,7 +153,7 @@ def run_machine_b(tokens_to_generate):
     first_pass = True
     token_count = 0 
     eos_detected = False
-    while token_count <= tokens_to_generate:
+    while eos_detected == False:
         
         if first_pass:
             
