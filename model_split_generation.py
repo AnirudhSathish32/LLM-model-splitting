@@ -4,14 +4,16 @@ import time
 import psutil
 import os
 
-model_path = "./llama-3b"
+model_path = "./llama-8b"
 
-device = ""
+device = "cpu"
 
+"""
 if torch.cuda.is_available():
     device = "cuda"
 else:
     device = "cpu"
+"""
 
 model = AutoModelForCausalLM.from_pretrained(
     model_path,
@@ -34,7 +36,7 @@ inputs = tokenizer(prompt, return_tensors="pt")
 model.eval()
 #neural network enters evaluation mode so it behaves predictably
 
-stopping_layer = 14
+stopping_layer = 15
 starting_layer = stopping_layer + 1
 tokens_to_generate = 200
 
@@ -68,13 +70,15 @@ def save_handoff_package(hidden, position_embeddings, position_ids, save_dir="./
     torch.save(position_ids, f"{save_dir}/position_ids.pt")
 
 def load_handoff_package(save_dir="./handoff"):
-    device = ""
+    device = "cpu"
 
+    """
     if torch.cuda.is_available():
         device = "cuda"
     else:
         device = "cpu"
-
+    """
+    
     hidden = torch.load(f"{save_dir}/hidden.pt").to(device)
     cos = torch.load(f"{save_dir}/cos.pt").to(device)
     sin = torch.load(f"{save_dir}/sin.pt").to(device)

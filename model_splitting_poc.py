@@ -35,7 +35,7 @@ compressed conceptual understanding of the input at that specific layer.
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
 
-model_path = "./llama-3b"
+model_path = "./llama-8b"
 
 model = AutoModelForCausalLM.from_pretrained(model_path)
 #Loading model 
@@ -47,7 +47,10 @@ inputs = tokenizer(prompt, return_tensors="pt")
 #Tokenizing prompt into input tensors
 model.eval()
 #neural network enters evaluation mode so it behaves predictably
-
+print(torch.cuda.is_available())
+print(torch.__version__)
+print(torch.version.cuda)
+print(torch.cuda.is_available())
 """
 Defining Split Boundary: 
 
@@ -60,10 +63,10 @@ Start Layer defines the beginning of the second split
 "Generation"
 
 
-stopping_layer = 14 
+stopping_layer = 15 
 #Defining Stop Layer 
 
-starting_layer = 15 
+starting_layer = 16 
 #Defining start layer
 
 def capture_full_pass():

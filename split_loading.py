@@ -87,5 +87,6 @@ with torch.no_grad():
         )[0]
         if x.dim() == 2:
             x = x.unsqueeze(0)
+            
 print("machine B done")
 print(x)

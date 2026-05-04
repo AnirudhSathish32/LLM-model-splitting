@@ -3,6 +3,8 @@ import torch
 import time
 import os
 import psutil
+import socket
+import io
 
 model_path = "./llama-3b"
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -26,6 +28,40 @@ model = AutoModelForCausalLM.from_pretrained(
     device_map=device_map
 )
 model.eval()
+
+MACHINE_A_TAILSCALE_IP = "100.74.100.92"  # replace with Machine A's Tailscale IP
+TAILSCALE_PORT = 65432
+
+def recv_all(conn, length):
+    data = b""
+    while len(data) < length:
+        packet = conn.recv(length - len(data))
+        if not packet:
+            raise ConnectionError("Connection dropped")
+        data += packet
+    return data
+
+def setup_machine_b():
+    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    print(f"Machine B connecting to Machine A at {MACHINE_A_TAILSCALE_IP}:{TAILSCALE_PORT}...")
+    client_socket.connect((MACHINE_A_TAILSCALE_IP, TAILSCALE_PORT))
+    print(f"Connected to Machine A")
+    return client_socket
+
+def wait_for_machine_a(conn):
+    length = int.from_bytes(recv_all(conn, 8), byteorder="big")
+    data = recv_all(conn, length)
+    hidden = torch.load(io.BytesIO(data))
+    return hidden
+
+def send_to_machine_a(conn, next_token_id, eos_detected):
+    result = {"token": next_token_id, "eos": eos_detected}
+    buffer = io.BytesIO()
+    torch.save(result, buffer)
+    data = buffer.getvalue()
+    conn.sendall(len(data).to_bytes(8, byteorder="big"))
+    conn.sendall(data)
+
 
 def get_system_stats(label):
     # CPU usage
@@ -108,14 +144,21 @@ def run_machine_b(tokens_to_generate):
     position_ids = None
     first_pass = True
     token_count = 0 
+    eos_detected = False
     while token_count <= tokens_to_generate:
         
         if first_pass:
-            hidden, position_embeddings, position_ids = load_handoff_package(first_pass=first_pass)
+            
+            hidden, position_embeddings, position_ids = wait_for_machine_a(conn)
+
+            #hidden, position_embeddings, position_ids = load_handoff_package(first_pass=first_pass)
             #load file into memory
 
         else:
-            hidden = load_handoff_package(first_pass)
+            
+            hidden = wait_for_machine_a(conn)
+
+            #hidden = load_handoff_package(first_pass)
 
         next_token_id, cache_b = split_2(hidden, position_embeddings, position_ids, cache_b)
         #perform split 2 and generate the next token
@@ -126,9 +169,21 @@ def run_machine_b(tokens_to_generate):
             eos_ids = [eos_ids]
         if next_token_id.item() in eos_ids:
             # if we have detect eos/reached token count then we call machine A to start decoding the response by sending eos_detected = True
-            break
+            eos_detected = True
+
  
-        # call machine A then return next_token_id from split 2 function
+            # call machine A then return next_token_id from split 2 function
+            send_to_machine_a(conn, next_token_id, eos_detected)
+        if eos_detected:
+            break
 
     get_system_stats("==================== SPLIT GEN STATS ============================")
     return
+
+
+if __name__ == "__main__":
+    conn = setup_machine_b()
+    try:
+        run_machine_b(conn)
+    finally:
+        conn.close()

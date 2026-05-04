@@ -40,17 +40,37 @@ inputs = {k: v.to(device) for k, v in inputs.items()}
 
 captured = {}
 
-def setup_machine_a_conn(host="0.0.0.0", port=65432):
+TAILSCALE_PORT = 65432
+
+def recv_all(conn, length):
+    data = b""
+    while len(data) < length:
+        packet = conn.recv(length - len(data))
+        if not packet:
+            raise ConnectionError("Connection dropped")
+        data += packet
+    return data
+
+def setup_machine_a_conn():
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server_socket.bind((host, port))
+    server_socket.bind(("0.0.0.0", TAILSCALE_PORT))
     server_socket.listen(1)
-    print(f"Machine A waiting for Machine B to connect on port {port}...")
+    print(f"Machine A waiting for Machine B to connect on port {TAILSCALE_PORT}...")
     conn, addr = server_socket.accept()
     print(f"Machine B connected from {addr}")
     return server_socket, conn
 
 def send_to_machine_b(conn, hidden, position_embeddings=None, position_ids=None):
+    package = {"hidden": hidden}
+    
+    if position_embeddings is not None:
+        package["cos"] = position_embeddings[0]
+        package["sin"] = position_embeddings[1]
+    
+    if position_ids is not None:
+        package["position_ids"] = position_ids
+    
     buffer = io.BytesIO()
     torch.save(hidden, buffer)
     data = buffer.getvalue()
@@ -142,11 +162,16 @@ def run_machine_a(tokens_to_generate):
         # perform split 1
         
         if first_pass:
-            save_handoff_package(hidden, position_embeddings, position_ids)
+            #save_handoff_package(hidden, position_embeddings, position_ids)
+
+            send_to_machine_b(hidden, position_embeddings, position_ids)
+
+
             #export captured["position_ids"], captured["position_embeddings"] and captured["hidden"]
 
         else:
-            save_handoff_package(hidden)
+            #save_handoff_package(hidden)
+            send_to_machine_b(hidden)
 
 
         # call machine_b
@@ -161,3 +186,13 @@ def run_machine_a(tokens_to_generate):
         #Append new token to input for next pass
 
     response = tokenizer.decode(generated_token_ids, skip_special_tokens=False)
+
+
+if __name__ == "__main__":
+    server_socket, conn = setup_server()
+    try:
+        result = run_machine_a(tokens_to_generate, conn)
+        print("Response:", result)
+    finally:
+        conn.close()
+        server_socket.close()

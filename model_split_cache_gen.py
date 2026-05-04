@@ -5,15 +5,15 @@ import os
 import psutil
 
 
-model_path = "./llama-3b"
+model_path = "./llama-8b"
 
-device = ""
-
+device = "cpu"
+"""
 if torch.cuda.is_available():
     device = "cuda"
 else:
     device = "cpu"
-
+"""
 model = AutoModelForCausalLM.from_pretrained(
     model_path,
     device_map=device)
@@ -29,6 +29,7 @@ prompt = tokenizer.apply_chat_template(
     tokenize=False,
     add_generation_prompt=True
 )
+
 #Loading prompt
 inputs = tokenizer(prompt, return_tensors="pt")
 #Tokenizing prompt into input tensors
@@ -83,13 +84,13 @@ def save_handoff_package(hidden, position_embeddings, position_ids, save_dir="./
     torch.save(position_ids, f"{save_dir}/position_ids.pt")
 
 def load_handoff_package(save_dir="./handoff", first_pass=True):
-    device = ""
-
+    device = "cpu"
+    """
     if torch.cuda.is_available():
         device = "cuda"
     else:
         device = "cpu"
-
+    """
     if first_pass:
         hidden = torch.load(f"{save_dir}/hidden.pt").to(device)
         cos = torch.load(f"{save_dir}/cos.pt").to(device)
