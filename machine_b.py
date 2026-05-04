@@ -59,8 +59,20 @@ def setup_machine_b(retries=10, delay=3):
 def load_machine_a_data(conn):
     length = int.from_bytes(recv_all(conn, 8), byteorder="big")
     data = recv_all(conn, length)
-    hidden = torch.load(io.BytesIO(data))
-    return hidden
+    package = torch.load(io.BytesIO(data))
+
+    hidden = package["hidden"]
+
+    # Only present on first pass
+    position_embeddings = None
+    position_ids = None
+
+    if "cos" in package:
+        position_embeddings = (package["cos"], package["sin"])
+    if "position_ids" in package:
+        position_ids = package["position_ids"]
+
+    return hidden, position_embeddings, position_ids
 
 def send_to_machine_a(conn, next_token_id, eos_detected):
     result = {"token": next_token_id, "eos": eos_detected}
@@ -161,7 +173,7 @@ def run_machine_b(tokens_to_generate):
 
             #hidden, position_embeddings, position_ids = load_handoff_package(first_pass=first_pass)
             #load file into memory
-        
+
         else:
             
             hidden = load_machine_a_data(conn)
