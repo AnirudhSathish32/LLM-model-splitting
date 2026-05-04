@@ -164,14 +164,15 @@ def run_machine_a(tokens_to_generate):
         if first_pass:
             #save_handoff_package(hidden, position_embeddings, position_ids)
 
-            send_to_machine_b(hidden, position_embeddings, position_ids)
+            send_to_machine_b(conn, hidden, position_embeddings, position_ids)
+            first_pass = False
 
 
             #export captured["position_ids"], captured["position_embeddings"] and captured["hidden"]
 
         else:
             #save_handoff_package(hidden)
-            send_to_machine_b(hidden)
+            send_to_machine_b(conn, hidden)
 
 
         # call machine_b

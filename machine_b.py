@@ -48,7 +48,7 @@ def setup_machine_b():
     print(f"Connected to Machine A")
     return client_socket
 
-def wait_for_machine_a(conn):
+def load_machine_a_data(conn):
     length = int.from_bytes(recv_all(conn, 8), byteorder="big")
     data = recv_all(conn, length)
     hidden = torch.load(io.BytesIO(data))
@@ -149,14 +149,14 @@ def run_machine_b(tokens_to_generate):
         
         if first_pass:
             
-            hidden, position_embeddings, position_ids = wait_for_machine_a(conn)
+            hidden, position_embeddings, position_ids = load_machine_a_data(conn)
 
             #hidden, position_embeddings, position_ids = load_handoff_package(first_pass=first_pass)
             #load file into memory
-
+        
         else:
             
-            hidden = wait_for_machine_a(conn)
+            hidden = load_machine_a_data(conn)
 
             #hidden = load_handoff_package(first_pass)
 
