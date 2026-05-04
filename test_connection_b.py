@@ -7,7 +7,7 @@ import time
 MACHINE_A_TAILSCALE_IP = "100.74.100.92"
 TAILSCALE_PORT = 65432
 
-def recv_all(conn, length):
+def read_TCP_data(conn, length):
     """
         helper function
 
@@ -30,7 +30,7 @@ def recv_all(conn, length):
         # add packet binaries to data
     return data
 
-def setup_client(retries=20, delay=3):
+def setup_machine_b(retries=20, delay=3):
     print(f"Machine B connecting to {MACHINE_A_TAILSCALE_IP}:{TAILSCALE_PORT}")
     for attempt in range(1, retries + 1):
         try:
@@ -50,15 +50,14 @@ def setup_client(retries=20, delay=3):
 
 def receive_file(conn, save_path):
     
-    length = int.from_bytes(recv_all(conn, 8), byteorder="big")
+    length = int.from_bytes(read_TCP_data(conn, 8), byteorder="big")
     # read exactly the first 8 bytes which contain the file size
     # int.from_bytes = turn bytes back into numbers
 
     print(f"Receiving {length} bytes...")
     
-    data = recv_all(conn, length)
+    data = read_TCP_data(conn, length)
     # read the payload
-    
     
     with open(save_path, "wb") as f:
     # open destination file in binary write mode
@@ -68,7 +67,7 @@ def receive_file(conn, save_path):
 
 if __name__ == "__main__":
     # Connect to Machine A
-    conn = setup_client()
+    conn = setup_machine_b()
 
     # Receive the file
     print("getting file 1")

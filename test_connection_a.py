@@ -5,7 +5,7 @@ import os
 
 TAILSCALE_PORT = 65432
 
-def recv_all(conn, length):
+def read_TCP_data(conn, length):
     """
         helper function
 
@@ -28,7 +28,7 @@ def recv_all(conn, length):
         # add packet binaries to data
     return data
 
-def setup_server():
+def setup_machine_a():
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     # Create server socket
     # AF_INET = IPv4 addressing
