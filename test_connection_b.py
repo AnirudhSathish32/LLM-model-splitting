@@ -8,12 +8,26 @@ MACHINE_A_TAILSCALE_IP = "100.74.100.92"
 TAILSCALE_PORT = 65432
 
 def recv_all(conn, length):
+    """
+        helper function
+
+        conn = TCP socket connection between Machine A and B brokered by Tailscale
+        length = exact number of bytes expected in the incoming data
+
+        returns data in binary format
+    
+    """
     data = b""
+    # empty bytes buffer, this is raw binary data
+
     while len(data) < length:
+        # we loop until we have enough bytes collected
         packet = conn.recv(length - len(data))
+        # the packet = length needed - length of data currently being processed 
         if not packet:
             raise ConnectionError("Connection dropped")
         data += packet
+        # add packet binaries to data
     return data
 
 def setup_client(retries=20, delay=3):
@@ -21,7 +35,11 @@ def setup_client(retries=20, delay=3):
     for attempt in range(1, retries + 1):
         try:
             client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            # Create client socket
+            # AF_INET = IPv4 addressing
+            # SOCK_STREAM means TCP
             client_socket.connect((MACHINE_A_TAILSCALE_IP, TAILSCALE_PORT))
+            # Attempts TCP handshake
             print(f"Connected to Machine A on attempt {attempt}")
             return client_socket
         except ConnectionRefusedError:
@@ -31,16 +49,21 @@ def setup_client(retries=20, delay=3):
     raise ConnectionError("Could not connect to Machine A")
 
 def receive_file(conn, save_path):
-    # Receive length first
+    
     length = int.from_bytes(recv_all(conn, 8), byteorder="big")
+    # read exactly the first 8 bytes which contain the file size
+    # int.from_bytes = turn bytes back into numbers
+
     print(f"Receiving {length} bytes...")
     
-    # Receive file bytes
     data = recv_all(conn, length)
+    # read the payload
     
-    # Write to disk
+    
     with open(save_path, "wb") as f:
+    # open destination file in binary write mode
         f.write(data)
+        # write the data
     print(f"File saved to {save_path}")
 
 if __name__ == "__main__":
