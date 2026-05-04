@@ -7,7 +7,7 @@ import psutil
 import io 
 
 model_path = "./llama-3b"
-device = "cuda" if torch.cuda.is_available() else "cpu"
+device = "cpu"
 tokenizer = AutoTokenizer.from_pretrained(model_path)
 stopping_layer = 14
 starting_layer = stopping_layer + 1
@@ -29,7 +29,7 @@ model = AutoModelForCausalLM.from_pretrained(
 model.eval()
 
 # Prompt setup lives on Machine A — it drives the generation loop
-messages = [{"role": "user", "content": "Best Alfredo pasta recipe"}]
+messages = [{"role": "user", "content": "hello world"}]
 prompt = tokenizer.apply_chat_template(
     messages,
     tokenize=False,
@@ -141,7 +141,7 @@ def split_1(current_input_ids, cache_a=None):
 
     return hidden, position_embeddings, position_ids, cache_a
 
-def run_machine_a(tokens_to_generate):
+def run_machine_a(tokens_to_generate, conn):
     generated_token_ids = []
     
     # Start with the original input ids
@@ -190,7 +190,7 @@ def run_machine_a(tokens_to_generate):
 
 
 if __name__ == "__main__":
-    server_socket, conn = setup_server()
+    server_socket, conn = setup_machine_a_conn()
     try:
         result = run_machine_a(tokens_to_generate, conn)
         print("Response:", result)
