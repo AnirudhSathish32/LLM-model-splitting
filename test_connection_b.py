@@ -48,12 +48,14 @@ if __name__ == "__main__":
     conn = setup_client()
 
     # Receive the file
+    print("getting file 1")
     receive_file(conn, "./received_dummy.pt")
+    print("getting file 2")
     receive_file(conn, "./received_dummy2.pt")
 
     # Load and print the tensor
     tensor = torch.load("./received_dummy.pt")
-    tensor = torch.load("./recieved_dummy2.pt")
+    tensor2 = torch.load("./received_dummy2.pt")
     print(f"Received tensor: {tensor}")
     print(f"Shape: {tensor.shape}")
 
