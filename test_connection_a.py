@@ -2,9 +2,7 @@ import socket
 import io
 import torch
 import os
-import time
 
-MACHINE_A_TAILSCALE_IP = "100.74.100.92"  # replace with Machine A's Tailscale IP
 TAILSCALE_PORT = 65432
 
 def recv_all(conn, length):
@@ -16,48 +14,46 @@ def recv_all(conn, length):
         data += packet
     return data
 
-def setup_client(retries=20, delay=3):
-    print(f"Machine B connecting to {MACHINE_A_TAILSCALE_IP}:{TAILSCALE_PORT}")
-    for attempt in range(1, retries + 1):
-        try:
-            client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            client_socket.connect((MACHINE_A_TAILSCALE_IP, TAILSCALE_PORT))
-            print(f"Connected to Machine A on attempt {attempt}")
-            return client_socket
-        except ConnectionRefusedError:
-            print(f"Attempt {attempt}/{retries} — Machine A not ready, retrying in {delay}s...")
-            client_socket.close()
-            time.sleep(delay)
-    raise ConnectionError("Could not connect to Machine A")
+def setup_server():
+    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server_socket.bind(("0.0.0.0", TAILSCALE_PORT))
+    server_socket.listen(1)
+    print(f"Machine A listening on port {TAILSCALE_PORT}...")
+    conn, addr = server_socket.accept()
+    print(f"Machine B connected from {addr}")
+    return server_socket, conn
 
-def receive_file(conn, save_path):
-    # Receive length first
-    length = int.from_bytes(recv_all(conn, 8), byteorder="big")
-    print(f"Receiving {length} bytes...")
-    
-    # Receive file bytes
-    data = recv_all(conn, length)
-    
-    # Write to disk
-    with open(save_path, "wb") as f:
-        f.write(data)
-    print(f"File saved to {save_path}")
+def send_file(conn, filepath):
+    # Read file as raw bytes
+    with open(filepath, "rb") as f:
+        data = f.read()
+    # Send length first then data
+    conn.sendall(len(data).to_bytes(8, byteorder="big"))
+    conn.sendall(data)
+    print(f"Sent {filepath} ({len(data)} bytes)")
 
 if __name__ == "__main__":
-    # Connect to Machine A
-    conn = setup_client()
+    # Create a dummy tensor and save it
+    dummy_tensor = torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+    dummy_tensor2 = torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+    torch.save(dummy_tensor, "./dummy.pt")
+    torch.save(dummy_tensor2, "./dummy2.pt")
+    print(f"Created dummy tensor: {dummy_tensor}")
+    print(f"Created dummy tensor: {dummy_tensor2}")
 
-    # Receive the file
-    receive_file(conn, "./received_dummy.pt")
+    # Connect
+    server_socket, conn = setup_server()
 
-    # Load and print the tensor
-    tensor = torch.load("./received_dummy.pt")
-    print(f"Received tensor: {tensor}")
-    print(f"Shape: {tensor.shape}")
+    # Send the file
+    send_file(conn, "./dummy.pt")
+    send_file(conn, "./dummy2.pt")
 
-    # Send confirmation back to Machine A
-    conn.sendall(b"done")
-    print("Confirmation sent to Machine A")
+    # Wait for Machine B to confirm receipt
+    confirm = recv_all(conn, 4)
+    print(f"Machine B confirmed: {confirm.decode()}")
+    
 
     conn.close()
-    print("Machine B done")
+    server_socket.close()
+    print("Machine A done")
