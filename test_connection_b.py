@@ -4,7 +4,7 @@ import torch
 import os
 import time
 
-MACHINE_A_TAILSCALE_IP = "100.x.x.x"  # replace with Machine A's Tailscale IP
+MACHINE_A_TAILSCALE_IP = "100.74.100.92" 
 TAILSCALE_PORT = 65432
 
 def recv_all(conn, length):
@@ -48,10 +48,14 @@ if __name__ == "__main__":
     conn = setup_client()
 
     # Receive the file
+    print("getting file 1")
     receive_file(conn, "./received_dummy.pt")
+    print("getting file 2")
+    receive_file(conn, "./received_dummy2.pt")
 
     # Load and print the tensor
     tensor = torch.load("./received_dummy.pt")
+    tensor2 = torch.load("./received_dummy2.pt")
     print(f"Received tensor: {tensor}")
     print(f"Shape: {tensor.shape}")
 
