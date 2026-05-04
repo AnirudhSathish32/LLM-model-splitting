@@ -7,7 +7,7 @@ import socket
 import io
 
 model_path = "./llama-3b"
-device = "cuda" if torch.cuda.is_available() else "cpu"
+device = "cpu"
 tokenizer = AutoTokenizer.from_pretrained(model_path)
 stopping_layer = 14
 starting_layer = stopping_layer + 1
@@ -23,23 +23,12 @@ device_map["lm_head"] = device
 
 model = AutoModelForCausalLM.from_pretrained(
     model_path,
-    dtype=torch.bfloat16,
-    attn_implementation="eager",
     device_map=device_map
 )
 model.eval()
 
-MACHINE_A_TAILSCALE_IP = "100.74.100.92"  # replace with Machine A's Tailscale IP
+MACHINE_A_TAILSCALE_IP = "100.74.100.92"  
 TAILSCALE_PORT = 65432
-
-def recv_all(conn, length):
-    data = b""
-    while len(data) < length:
-        packet = conn.recv(length - len(data))
-        if not packet:
-            raise ConnectionError("Connection dropped")
-        data += packet
-    return data
 
 def setup_machine_b(retries=10, delay=3):
     print(f"Machine B attempting to connect to {MACHINE_A_TAILSCALE_IP}:{TAILSCALE_PORT}")
@@ -57,31 +46,12 @@ def setup_machine_b(retries=10, delay=3):
     raise ConnectionError(f"Could not connect to Machine A after {retries} attempts. Is Machine A running?")
 
 def load_machine_a_data(conn):
-    length = int.from_bytes(recv_all(conn, 8), byteorder="big")
-    data = recv_all(conn, length)
-    package = torch.load(io.BytesIO(data))
-
-    hidden = package["hidden"]
-
-    # Only present on first pass
-    position_embeddings = None
-    position_ids = None
-
-    if "cos" in package:
-        position_embeddings = (package["cos"], package["sin"])
-    if "position_ids" in package:
-        position_ids = package["position_ids"]
+    
 
     return hidden, position_embeddings, position_ids
 
 def send_to_machine_a(conn, next_token_id, eos_detected):
-    result = {"token": next_token_id, "eos": eos_detected}
-    buffer = io.BytesIO()
-    torch.save(result, buffer)
-    data = buffer.getvalue()
-    conn.sendall(len(data).to_bytes(8, byteorder="big"))
-    conn.sendall(data)
-
+    return
 
 def get_system_stats(label):
     # CPU usage

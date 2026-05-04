@@ -111,7 +111,7 @@ def perform_full_generation():
             **inputs,
             max_new_tokens=tokens_to_generate,
             do_sample=True,
-            temperature=0.7
+            use_cache=True
         )
     response = tokenizer.decode(output_ids[0], skip_special_tokens=False)
     get_system_stats("================= FULL GEN STATS ======================")

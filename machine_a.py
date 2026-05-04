@@ -22,8 +22,6 @@ device_map["lm_head"] = "meta"
 
 model = AutoModelForCausalLM.from_pretrained(
     model_path,
-    dtype=torch.bfloat16,
-    attn_implementation="eager",
     device_map=device_map
 )
 model.eval()
@@ -42,14 +40,6 @@ captured = {}
 
 TAILSCALE_PORT = 65432
 
-def recv_all(conn, length):
-    data = b""
-    while len(data) < length:
-        packet = conn.recv(length - len(data))
-        if not packet:
-            raise ConnectionError("Connection dropped")
-        data += packet
-    return data
 
 def setup_machine_a_conn():
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -62,20 +52,7 @@ def setup_machine_a_conn():
     return server_socket, conn
 
 def send_to_machine_b(conn, hidden, position_embeddings=None, position_ids=None):
-    package = {"hidden": hidden}
-    
-    if position_embeddings is not None:
-        package["cos"] = position_embeddings[0]
-        package["sin"] = position_embeddings[1]
-    
-    if position_ids is not None:
-        package["position_ids"] = position_ids
-    
-    buffer = io.BytesIO()
-    torch.save(hidden, buffer)
-    data = buffer.getvalue()
-    conn.sendall(len(data).to_bytes(8, byteorder="big"))
-    conn.sendall(data)
+    return 
 
 
 def get_system_stats(label):
