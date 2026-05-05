@@ -207,7 +207,7 @@ def run_machine_b(tokens_to_generate):
 
         if msg_type == MSG_FIRST_PASS:
             print("Machine B first pass")
-            os.makedirs("./recieved", exist_ok=True)
+            os.makedirs("./received", exist_ok=True)
             receive_file(conn, "./received/hidden.pt")
             receive_file(conn, "./received/sin.pt")
             receive_file(conn, "./received/position_ids.pt")
