@@ -49,6 +49,14 @@ def send_eos(conn):
     conn.sendall((0).to_bytes(8, byteorder="big"))
     print("EOS sent to Machine A")
 
+def receive_msg_file(conn, expected_msg_type, save_path):
+    msg_type = read_TCP_data(conn, 1)[0]
+    if msg_type != expected_msg_type:
+        raise ValueError(
+            f"Expected msg {expected_msg_type}, got {msg_type}"
+        )
+    receive_file(conn, save_path)
+
 
 def read_message(conn):
     msg_type = read_TCP_data(conn, 1)[0] 
@@ -203,27 +211,21 @@ def run_machine_b(tokens_to_generate):
     eos_detected = False
     while True:
         
-        # ---- Wait for message type from Machine A ----
-        print("Machine B waiting for message from Machine A...")
-        msg_type = read_TCP_data(conn, 1)[0]
-        print(f"Received message type: {msg_type}")
-        
-
-        if msg_type == MSG_FIRST_PASS:
+        if first_pass:
             print("Machine B first pass")
             os.makedirs("./received", exist_ok=True)
-            receive_file(conn, "./received/hidden.pt")
-            receive_file(conn, "./received/sin.pt")
-            receive_file(conn, "./received/position_ids.pt")
-            receive_file(conn, "./received/cos.pt")
+            receive_msg_file(conn, MSG_FIRST_PASS,"./received/hidden.pt")
+            receive_msg_file(conn, MSG_FIRST_PASS,"./received/sin.pt")
+            receive_msg_file(conn, MSG_FIRST_PASS,"./received/position_ids.pt")
+            receive_msg_file(conn, MSG_FIRST_PASS,"./received/cos.pt")
 
             hidden, position_embeddings, position_ids = load_handoff_package(first_pass=first_pass)
             first_pass = False
             #load file into memory
 
-        elif msg_type == MSG_NEXT_PASS:
-            receive_file(conn, "./received/hidden.pt")
-            hidden = load_handoff_package(first_pass)
+        else:
+            receive_msg_file(conn, MSG_NEXT_PASS,"./received/hidden.pt")
+            hidden = load_handoff_package(first_pass=first_pass)
 
         print(f"hidden device: {hidden.device}")
         print(f"position_ids device: {position_ids.device}")

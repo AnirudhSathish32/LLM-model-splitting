@@ -11,7 +11,7 @@ device = "cpu"
 tokenizer = AutoTokenizer.from_pretrained(model_path)
 stopping_layer = 14
 starting_layer = stopping_layer + 1
-tokens_to_generate = 200
+tokens_to_generate = 50
 
 model = AutoModelForCausalLM.from_pretrained(
     model_path,
@@ -49,7 +49,9 @@ MSG_EOS = 4
     #message_types = {1:"FIRST_PASS", 2:"NEXT_PASS", 3:"TOKEN", 4:"EOS"}
     #msg_name = message_types.get(msg_type)
 
-
+def send_msg_file(conn, msg_type, filepath):
+    conn.sendall(msg_type.to_bytes(1, "big"))
+    send_to_machine_b(conn, filepath)
 
 
 def read_message(conn):
@@ -155,6 +157,9 @@ def save_handoff_package(hidden, position_embeddings, position_ids, save_dir="./
     torch.save(position_embeddings[1], f"{save_dir}/sin.pt")
     torch.save(position_ids, f"{save_dir}/position_ids.pt")
 
+def save_hidden_only(hidden, save_dir="./handoff"):
+    torch.save(hidden, f"{save_dir}/hidden.pt")
+
 def split_1(current_input_ids, cache_a=None):
     """
     ---- Machine A ----
@@ -199,18 +204,16 @@ def run_machine_a(tokens_to_generate, conn):
         if first_pass:
             save_handoff_package(hidden, position_embeddings, position_ids)
 
-            conn.sendall(MSG_FIRST_PASS.to_bytes(1, byteorder="big"))
-
-            send_to_machine_b(conn, "./handoff/hidden.pt")
-            send_to_machine_b(conn, "./handoff/sin.pt")
-            send_to_machine_b(conn, "./handoff/position_ids.pt")
-            send_to_machine_b(conn, "./handoff/cos.pt")
+            send_msg_file(conn, MSG_FIRST_PASS,"./handoff/hidden.pt")
+            send_msg_file(conn, MSG_FIRST_PASS,"./handoff/sin.pt")
+            send_msg_file(conn, MSG_FIRST_PASS,"./handoff/position_ids.pt")
+            send_msg_file(conn, MSG_FIRST_PASS,"./handoff/cos.pt")
             first_pass = False
 
             #export captured["position_ids"], captured["position_embeddings"] and captured["hidden"]
 
         else:
-            save_handoff_package(hidden)
+            save_hidden_only(hidden)
 
             conn.sendall(MSG_NEXT_PASS.to_bytes(1, byteorder="big"))
 
@@ -221,6 +224,7 @@ def run_machine_a(tokens_to_generate, conn):
         msg_type, payload = read_message(conn)
 
         if msg_type == MSG_EOS:
+            print("received EOS")
             break
 
         if msg_type == MSG_TOKEN:
@@ -228,7 +232,8 @@ def run_machine_a(tokens_to_generate, conn):
             next_token_id = torch.load(io.BytesIO(payload))
             generated_token_ids.append(next_token_id.item())
             current_input_ids = torch.cat([current_input_ids, next_token_id.unsqueeze(0)], dim=-1)
-            token += 1
+            token_count += 1
+            print(token_count)
 
     h1.remove()
     h2.remove()
