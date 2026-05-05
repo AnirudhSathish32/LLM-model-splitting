@@ -13,17 +13,17 @@ stopping_layer = 14
 starting_layer = stopping_layer + 1
 tokens_to_generate = 200
 
-# Machine A device map — only loads layers 0-13
-device_map = {"model.embed_tokens": device}
-for i in range(28):
-    device_map[f"model.layers.{i}"] = device if i < stopping_layer else "meta"
-device_map["model.norm"] = "meta"
-device_map["lm_head"] = "meta"
-
 model = AutoModelForCausalLM.from_pretrained(
     model_path,
-    device_map=device_map
+    torch_dtype=torch.bfloat16,
+    device_map={"": "cpu"}
 )
+
+# KEEP ONLY FIRST HALF
+model.model.layers = torch.nn.ModuleList(
+    model.model.layers[:14]
+)
+
 model.eval()
 
 # Prompt setup lives on Machine A — it drives the generation loop
@@ -200,7 +200,7 @@ def run_machine_a(tokens_to_generate, conn):
             save_handoff_package(hidden, position_embeddings, position_ids)
 
             conn.sendall(MSG_FIRST_PASS.to_bytes(1, byteorder="big"))
-            
+
             send_to_machine_b(conn, "./handoff/hidden.pt")
             send_to_machine_b(conn, "./handoff/sin.pt")
             send_to_machine_b(conn, "./handoff/position_ids.pt")

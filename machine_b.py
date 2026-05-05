@@ -1,4 +1,5 @@
 from transformers import AutoModelForCausalLM, AutoTokenizer, DynamicCache, DynamicLayer
+from transformers import AutoModelForCausalLM, AutoTokenizer, DynamicCache, DynamicLayer
 import torch
 import time
 import os
@@ -23,6 +24,8 @@ model = AutoModelForCausalLM.from_pretrained(
 model.model.layers = torch.nn.ModuleList(
     model.model.layers[14:]
 )
+
+model.eval()
 
 MACHINE_A_TAILSCALE_IP = "100.74.100.92"  
 TAILSCALE_PORT = 65432
