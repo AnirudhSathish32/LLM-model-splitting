@@ -169,10 +169,7 @@ def split_2(hidden, position_embeddings, position_ids, cache_b=None):
     ---- Machine B ----
     Second Split 
     """
-    assert hidden.device.type != "meta", "hidden is on meta device"
-    assert position_ids.device.type != "meta", "position_ids is on meta device"
-    assert position_embeddings[0].device.type != "meta", "cos is on meta device"
-    assert position_embeddings[1].device.type != "meta", "sin is on meta device"
+    
     if cache_b is None:
         cache_b = DynamicCache()
         for _ in range(len(model.model.layers) - (starting_layer - 1)):
@@ -181,14 +178,12 @@ def split_2(hidden, position_embeddings, position_ids, cache_b=None):
     with torch.no_grad():
         x = hidden
 
-        for i in range(starting_layer - 1, len(model.model.layers)):
-            cache_index = i - (starting_layer - 1)
-
+        for i in range(starting_layer, len(model.model.layers)):
             x = model.model.layers[i](
                 x,
                 position_ids= position_ids,
                 position_embeddings=position_embeddings,
-                past_key_value=cache_b.layers[cache_index]
+                past_key_value=cache_b.layers[i]
             )[0]
             if x.dim() == 2:
                 x = x.unsqueeze(0)

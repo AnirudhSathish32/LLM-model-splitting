@@ -237,7 +237,7 @@ def run_machine_a(tokens_to_generate, conn):
 
     h1.remove()
     h2.remove()
-    response = tokenizer.decode(generated_token_ids, skip_special_tokens=False)
+    response = tokenizer.decode(generated_token_ids, skip_special_tokens=True)
     return response
 
 if __name__ == "__main__":
