@@ -1,5 +1,4 @@
-from transformers import AutoModelForCausalLM, AutoTokenizer, DynamicCache, DynamicLayer, AutoConfig
-from accelerate import init_empty_weights, load_checkpoint_and_dispatch
+from transformers import AutoModelForCausalLM, AutoTokenizer, DynamicCache, DynamicLayer
 import torch
 import time
 import os
@@ -15,37 +14,17 @@ starting_layer = stopping_layer + 1
 tokens_to_generate = 200
 first_pass = True 
 
-config = AutoConfig.from_pretrained(model_path)
-
-# Create empty model skeleton — no weights loaded at all
-with init_empty_weights():
-    model_b = AutoModelForCausalLM.from_config(config)
-
-model_b.tie_weights()
-
-# Define which layers Machine B owns
-device_map = {"model.embed_tokens": "meta"}
-for i in range(28):
-    device_map[f"model.layers.{i}"] = "cpu" if i >= stopping_layer else "meta"
-device_map["model.norm"] = "cpu"
-device_map["lm_head"] = "cpu"
-
-# Load only the weights that map to a real device — meta layers are skipped
-model_b = load_checkpoint_and_dispatch(
-    model_b,
-    checkpoint=model_path,
-    device_map=device_map,
-    dtype=torch.bfloat16,
-    no_split_module_classes=["LlamaDecoderLayer"]
+model = AutoModelForCausalLM.from_pretrained(
+    model_path,
+    torch_dtype=torch.bfloat16,
+    device_map={"": "cpu"}
 )
-model_b.eval()
 
-print("Model B loaded — only layers 14-27 have real weights")
+model.model.layers = torch.nn.ModuleList(
+    model.model.layers[14:]
+)
 
-# Verify
-for i in range(starting_layer - 1, 28):
-    param = next(model_b.model.layers[i].parameters())
-    print(f"Layer {i}: {param.device} {param.dtype}")
+model.eval()
 
 MACHINE_A_TAILSCALE_IP = "100.74.100.92"  
 TAILSCALE_PORT = 65432
