@@ -220,7 +220,10 @@ def run_machine_b(tokens_to_generate):
 
         else:
             receive_msg_file(conn, MSG_NEXT_PASS,"./received/hidden.pt")
-            hidden = load_handoff_package(first_pass=first_pass)
+            receive_msg_file(conn, MSG_NEXT_PASS,"./received/sin.pt")
+            receive_msg_file(conn, MSG_NEXT_PASS,"./received/position_ids.pt")
+            receive_msg_file(conn, MSG_NEXT_PASS,"./received/cos.pt")
+            hidden, position_embeddings, position_ids = load_handoff_package(first_pass=first_pass)
 
         print(f"hidden device: {hidden.device}")
         print(f"position_ids device: {position_ids.device}")

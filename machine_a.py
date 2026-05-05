@@ -213,11 +213,11 @@ def run_machine_a(tokens_to_generate, conn):
             #export captured["position_ids"], captured["position_embeddings"] and captured["hidden"]
 
         else:
-            save_hidden_only(hidden)
-
-            conn.sendall(MSG_NEXT_PASS.to_bytes(1, byteorder="big"))
-
-            send_to_machine_b(conn, "./handoff/hidden.pt")
+            save_handoff_package(hidden, position_embeddings, position_ids)
+            send_msg_file(conn, MSG_NEXT_PASS,"./handoff/hidden.pt")
+            send_msg_file(conn, MSG_NEXT_PASS,"./handoff/sin.pt")
+            send_msg_file(conn, MSG_NEXT_PASS,"./handoff/position_ids.pt")
+            send_msg_file(conn, MSG_NEXT_PASS,"./handoff/cos.pt")
 
 
         # call machine_b
