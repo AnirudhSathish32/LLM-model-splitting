@@ -192,6 +192,7 @@ def run_machine_a(tokens_to_generate, conn):
 
     while token_count < tokens_to_generate:
         
+        print("performing split 1")
         hidden, position_embeddings, position_ids, cache_a = split_1(current_input_ids, cache_a)
         # perform split 1
         
@@ -199,7 +200,7 @@ def run_machine_a(tokens_to_generate, conn):
             save_handoff_package(hidden, position_embeddings, position_ids)
 
             conn.sendall(MSG_FIRST_PASS.to_bytes(1, byteorder="big"))
-
+            
             send_to_machine_b(conn, "./handoff/hidden.pt")
             send_to_machine_b(conn, "./handoff/sin.pt")
             send_to_machine_b(conn, "./handoff/position_ids.pt")

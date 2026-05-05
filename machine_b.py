@@ -146,14 +146,14 @@ def load_handoff_package(save_dir="./received", first_pass=True):
         device = "cpu"
     """
     if first_pass:
-        hidden = torch.load(f"{save_dir}/hidden.pt").to(device)
-        cos = torch.load(f"{save_dir}/cos.pt").to(device)
-        sin = torch.load(f"{save_dir}/sin.pt").to(device)
+        hidden = torch.load(f"{save_dir}/hidden.pt", map_location=device)
+        cos = torch.load(f"{save_dir}/cos.pt", map_location=device)
+        sin = torch.load(f"{save_dir}/sin.pt", map_location=device)
         position_embeddings = (cos, sin)
-        position_ids = torch.load(f"{save_dir}/position_ids.pt").to(device)
+        position_ids = torch.load(f"{save_dir}/position_ids.pt", map_location=device)
         return hidden, position_embeddings, position_ids
     else:
-        hidden = torch.load(f"{save_dir}/hidden.pt").to(device)
+        hidden = torch.load(f"{save_dir}/hidden.pt", map_location=device)
         return hidden
 
 def split_2(hidden, position_embeddings, position_ids, cache_b=None):
