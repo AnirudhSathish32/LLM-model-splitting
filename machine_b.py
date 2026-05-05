@@ -178,7 +178,7 @@ def split_2(hidden, position_embeddings, position_ids, cache_b=None):
     with torch.no_grad():
         x = hidden
 
-        for i in range(starting_layer, len(model.model.layers)):
+        for i in range(len(model.model.layers)):
             x = model.model.layers[i](
                 x,
                 position_ids= position_ids,
