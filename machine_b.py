@@ -172,7 +172,7 @@ def split_2(hidden, position_embeddings, position_ids, cache_b=None):
     
     if cache_b is None:
         cache_b = DynamicCache()
-        for _ in range(len(model.model.layers) - (starting_layer - 1)):
+        for _ in range(len(model.model.layers)):
             cache_b.layers.append(DynamicLayer())
 
     with torch.no_grad():
