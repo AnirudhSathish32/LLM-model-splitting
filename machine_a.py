@@ -34,25 +34,83 @@ prompt = tokenizer.apply_chat_template(
     add_generation_prompt=True
 )
 inputs = tokenizer(prompt, return_tensors="pt")
-inputs = {k: v.to(device) for k, v in inputs.items()}
-
 captured = {}
-
 TAILSCALE_PORT = 65432
 
+MSG_FIRST_PASS = 1
+MSG_NEXT_PASS = 2
+MSG_TOKEN = 3
+MSG_EOS = 4
+
+#def handle_message(msg_type, payload):
+    #"""
+    #    message types {1:INIT, 2:STEP, 3:XXXX}
+    #"""
+    #message_types = {1:"FIRST_PASS", 2:"NEXT_PASS", 3:"TOKEN", 4:"EOS"}
+    #msg_name = message_types.get(msg_type)
+
+
+
+
+def read_message(conn):
+    msg_type = read_TCP_data(conn, 1)[0] 
+    length = int.from_bytes(read_TCP_data(conn, 8), "big") 
+    payload = read_TCP_data(conn, length) 
+    return msg_type, payload
+
+def read_TCP_data(conn, length):
+    """
+        helper function
+
+        conn = TCP socket connection between Machine A and B brokered by Tailscale
+        length = exact number of bytes expected in the incoming data
+
+        returns data in binary format
+    
+    """
+    data = b""
+    # empty bytes buffer, this is raw binary data
+
+    while len(data) < length:
+        # we loop until we have enough bytes collected
+        packet = conn.recv(length - len(data))
+        # the packet = length needed - length of data currently being processed 
+        if not packet:
+            raise ConnectionError("Connection dropped")
+        data += packet
+        # add packet binaries to data
+    return data
 
 def setup_machine_a_conn():
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    # Create server socket
+    # AF_INET = IPv4 addressing
+    # SOCK_STREAM means TCP
     server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    # Allows for the reuse of the port immediately after the program exits
     server_socket.bind(("0.0.0.0", TAILSCALE_PORT))
+    # Listen across all network interfaces on the TAILSCALE port
     server_socket.listen(1)
-    print(f"Machine A waiting for Machine B to connect on port {TAILSCALE_PORT}...")
+    # backlog size = 1, waiting for incoming connections
+    print(f"Machine A listening on port {TAILSCALE_PORT}...")
     conn, addr = server_socket.accept()
+    # when Machine B connects we return conn and addr
     print(f"Machine B connected from {addr}")
     return server_socket, conn
 
-def send_to_machine_b(conn, hidden, position_embeddings=None, position_ids=None):
-    return 
+def send_to_machine_b(conn, filepath):
+    with open(filepath, "rb") as f:
+        # Open file in binary read mode
+        # tensor files contain raw serialized bytes so text would corrupt the data
+        data = f.read()
+        # load file into memory
+    conn.sendall(len(data).to_bytes(8, byteorder="big"))
+    # len(data).tobytes(8) = let the first 8 bytes = the file length
+    # byteorder = big = send the most siginificant byte first
+    # we are telling the receiver how much data is coming 
+    conn.sendall(data)
+    # sending the actual data
+    print(f"Sent {filepath} ({len(data)} bytes)")
 
 
 def get_system_stats(label):
@@ -121,7 +179,6 @@ def split_1(current_input_ids, cache_a=None):
 def run_machine_a(tokens_to_generate, conn):
     generated_token_ids = []
     
-    # Start with the original input ids
     current_input_ids = inputs["input_ids"]
     
     cache_a = None
@@ -139,32 +196,43 @@ def run_machine_a(tokens_to_generate, conn):
         # perform split 1
         
         if first_pass:
-            #save_handoff_package(hidden, position_embeddings, position_ids)
+            save_handoff_package(hidden, position_embeddings, position_ids)
 
-            send_to_machine_b(conn, hidden, position_embeddings, position_ids)
+            conn.sendall(MSG_FIRST_PASS.to_bytes(1, byteorder="big"))
+
+            send_to_machine_b(conn, "./handoff/hidden.pt")
+            send_to_machine_b(conn, "./handoff/sin.pt")
+            send_to_machine_b(conn, "./handoff/position_ids.pt")
+            send_to_machine_b(conn, "./handoff/cos.pt")
             first_pass = False
-
 
             #export captured["position_ids"], captured["position_embeddings"] and captured["hidden"]
 
         else:
-            #save_handoff_package(hidden)
-            send_to_machine_b(conn, hidden)
+            save_handoff_package(hidden)
+
+            conn.sendall(MSG_NEXT_PASS.to_bytes(1, byteorder="big"))
+
+            send_to_machine_b(conn, "./handoff/hidden.pt")
 
 
         # call machine_b
-        
-        # next_token_id, eos_detected = run_machine_b(hidden, position_embeddings, position_ids, cache_b)
-        # call split_2 to generate next_token_id
+        msg_type, payload = read_message(conn)
 
-        # if eos_detected:
-            # break
+        if msg_type == MSG_EOS:
+            break
 
-        #current_input_ids = torch.cat([current_input_ids, next_token_id.unsqueeze(0)], dim=-1)
-        #Append new token to input for next pass
+        if msg_type == MSG_TOKEN:
+            print("receiving token")
+            next_token_id = torch.load(io.BytesIO(payload))
+            generated_token_ids.append(next_token_id.item())
+            current_input_ids = torch.cat([current_input_ids, next_token_id.unsqueeze(0)], dim=-1)
+            token += 1
 
+    h1.remove()
+    h2.remove()
     response = tokenizer.decode(generated_token_ids, skip_special_tokens=False)
-
+    return response
 
 if __name__ == "__main__":
     server_socket, conn = setup_machine_a_conn()

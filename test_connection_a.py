@@ -46,7 +46,6 @@ def setup_machine_a():
     return server_socket, conn
 
 def send_file(conn, filepath):
-    
     with open(filepath, "rb") as f:
         # Open file in binary read mode
         # tensor files contain raw serialized bytes so text would corrupt the data
