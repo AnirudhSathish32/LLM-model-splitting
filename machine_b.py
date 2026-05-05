@@ -161,6 +161,10 @@ def split_2(hidden, position_embeddings, position_ids, cache_b=None):
     ---- Machine B ----
     Second Split 
     """
+    assert hidden.device.type != "meta", "hidden is on meta device"
+    assert position_ids.device.type != "meta", "position_ids is on meta device"
+    assert position_embeddings[0].device.type != "meta", "cos is on meta device"
+    assert position_embeddings[1].device.type != "meta", "sin is on meta device"
     if cache_b is None:
         cache_b = DynamicCache()
         for _ in range(len(model.model.layers) - (starting_layer - 1)):
@@ -220,6 +224,11 @@ def run_machine_b(tokens_to_generate):
         elif msg_type == MSG_NEXT_PASS:
             receive_file(conn, "./received/hidden.pt")
             hidden = load_handoff_package(first_pass)
+
+        print(f"hidden device: {hidden.device}")
+        print(f"position_ids device: {position_ids.device}")
+        print(f"cos device: {position_embeddings[0].device}")
+        print(f"sin device: {position_embeddings[1].device}")
 
         print("Starting Split 2")
         next_token_id, cache_b = split_2(hidden, position_embeddings, position_ids, cache_b)
