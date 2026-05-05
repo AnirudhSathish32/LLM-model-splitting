@@ -203,10 +203,11 @@ def run_machine_b(tokens_to_generate):
         print("Machine B waiting for message from Machine A...")
         msg_type = read_TCP_data(conn, 1)[0]
         print(f"Received message type: {msg_type}")
-
+        
 
         if msg_type == MSG_FIRST_PASS:
             print("Machine B first pass")
+            os.makedirs("./recieved", exist_ok=True)
             receive_file(conn, "./received/hidden.pt")
             receive_file(conn, "./received/sin.pt")
             receive_file(conn, "./received/position_ids.pt")
