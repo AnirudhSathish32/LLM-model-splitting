@@ -21,6 +21,8 @@ config = AutoConfig.from_pretrained(model_path)
 with init_empty_weights():
     model_b = AutoModelForCausalLM.from_config(config)
 
+model_b.tie_weights()
+
 # Define which layers Machine B owns
 device_map = {"model.embed_tokens": "meta"}
 for i in range(28):
