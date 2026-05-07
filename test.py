@@ -1,18 +1,25 @@
-from transformers import AutoModelForCausalLM, AutoTokenizer, DynamicCache, DynamicLayer
+from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
 import torch
 import time
-import os
 import psutil
+import os
 
-"Input output token for each split"
-"Time duration each split and total"
-"Each output/input for each layer"
-"Model eval benchmarks"
-"size of cache"
+model_path = "./llama-3b"
 
-model_path = "./llama-8b"
+#Loading model 
+tokenizer = AutoTokenizer.from_pretrained(model_path)
+config = AutoConfig.from_pretrained(model_path)
+model = AutoModelForCausalLM.from_config(config)
+
+state_a = torch.load("./split-files/machine_a.pt")
+state_b = torch.load("./split-files/machine_b.pt")
+
+full_state = {**state_a, **state_b}
+
+model.load_state_dict(full_state)
 
 device = "cpu"
+
 """
 if torch.cuda.is_available():
     device = "cuda"
@@ -20,14 +27,10 @@ else:
     device = "cpu"
 """
 
-model = AutoModelForCausalLM.from_pretrained(
-    model_path,
-    device_map=device)
-#Loading model 
-tokenizer = AutoTokenizer.from_pretrained(model_path)
+
 #Loading Tokenizer
 messages = [
-    {"role": "user", "content": "Best Alfredo pasta recipe"}
+    {"role": "user", "content": "hello"}
 ]
 # Loading context
 prompt = tokenizer.apply_chat_template(
@@ -35,17 +38,15 @@ prompt = tokenizer.apply_chat_template(
     tokenize=False,
     add_generation_prompt=True
 )
-
 #Loading prompt
 inputs = tokenizer(prompt, return_tensors="pt")
 #Tokenizing prompt into input tensors
 model.eval()
 #neural network enters evaluation mode so it behaves predictably
 
-stopping_layer = 14
+stopping_layer = 15
 starting_layer = stopping_layer + 1
 tokens_to_generate = 200
-captured = {}
 
 def get_system_stats(label):
     # CPU usage
@@ -69,19 +70,6 @@ def get_system_stats(label):
     else:
         print("GPU: not available")
 
-def hook_fn(module, input, output):
-        hidden = output[0].detach()
-        if hidden.dim() == 2:
-            hidden = hidden.unsqueeze(0)
-        captured["hidden"] = hidden
-        raise StopIteration
-    
-def hook_pos(module, args, kwargs):
-    cos, sin = kwargs.get("position_embeddings")
-    captured["position_embeddings"] = (cos.detach().clone(), sin.detach().clone())
-    captured["position_ids"] = kwargs.get("position_ids")
-    captured["cache_a"] = kwargs.get("past_key_value")
-
 def save_handoff_package(hidden, position_embeddings, position_ids, save_dir="./handoff"):
     os.makedirs(save_dir, exist_ok=True)
     torch.save(hidden, f"{save_dir}/hidden.pt")
@@ -89,24 +77,23 @@ def save_handoff_package(hidden, position_embeddings, position_ids, save_dir="./
     torch.save(position_embeddings[1], f"{save_dir}/sin.pt")
     torch.save(position_ids, f"{save_dir}/position_ids.pt")
 
-def load_handoff_package(save_dir="./handoff", first_pass=True):
+def load_handoff_package(save_dir="./handoff"):
     device = "cpu"
+
     """
     if torch.cuda.is_available():
         device = "cuda"
     else:
         device = "cpu"
     """
-    if first_pass:
-        hidden = torch.load(f"{save_dir}/hidden.pt").to(device)
-        cos = torch.load(f"{save_dir}/cos.pt").to(device)
-        sin = torch.load(f"{save_dir}/sin.pt").to(device)
-        position_embeddings = (cos, sin)
-        position_ids = torch.load(f"{save_dir}/position_ids.pt").to(device)
-        return hidden, position_embeddings, position_ids
-    else:
-        hidden = torch.load(f"{save_dir}/hidden.pt").to(device)
-        return hidden
+    
+    hidden = torch.load(f"{save_dir}/hidden.pt").to(device)
+    cos = torch.load(f"{save_dir}/cos.pt").to(device)
+    sin = torch.load(f"{save_dir}/sin.pt").to(device)
+    position_embeddings = (cos, sin)
+    position_ids = torch.load(f"{save_dir}/position_ids.pt").to(device)
+
+    return hidden, position_embeddings, position_ids
 
 
 def perform_full_generation():
@@ -117,54 +104,62 @@ def perform_full_generation():
             **inputs,
             max_new_tokens=tokens_to_generate,
             do_sample=True,
-            use_cache=True
+            temperature=0.7
         )
     response = tokenizer.decode(output_ids[0], skip_special_tokens=False)
-    get_system_stats("================= FULL GEN STATS ======================")
+    get_system_stats("==================== FULL GEN STATS ============================")
     return print(response)
 
-def split_1(current_input_ids, cache_a=None):
+def split_1(current_input_ids):
     """
     ---- Machine A ----
     First Split
 
     """
+    captured = {}
+    def hook_fn(module, input, output):
+        hidden = output[0].detach().clone()
+        if hidden.dim() == 2:
+            hidden = hidden.unsqueeze(0)
+        captured["hidden"] = hidden
+        raise StopIteration
+    
+    def hook_pos(module, args, kwargs):
+        cos, sin = kwargs.get("position_embeddings")
+        captured["position_embeddings"] = (cos.detach().clone(), sin.detach().clone())
+        captured["position_ids"] = kwargs.get("position_ids")
+
+    h1 = model.model.layers[stopping_layer - 1].register_forward_hook(hook_fn)
+    h2 = model.model.layers[stopping_layer - 1].register_forward_pre_hook(hook_pos, with_kwargs=True)
+
     try:
         with torch.no_grad():
-            model(input_ids=current_input_ids,
-                past_key_values=cache_a,
-                use_cache=True,
-                return_dict=True)
+            output = model(input_ids=current_input_ids)
     except StopIteration:
         pass
+
+    h1.remove()
+    h2.remove()
+
     hidden = captured["hidden"]
     position_embeddings = captured["position_embeddings"]
     position_ids = captured["position_ids"]
-    cache_a = captured["cache_a"]
 
-    return hidden, position_embeddings, position_ids, cache_a
+    return hidden, position_embeddings, position_ids
 
-def split_2(hidden, position_embeddings, position_ids, cache_b=None):
+def split_2(hidden, position_embeddings, position_ids):
     """
     ---- Machine B ----
     Second Split 
     """
-    if cache_b is None:
-        cache_b = DynamicCache()
-        for _ in range(len(model.model.layers) - (starting_layer - 1)):
-            cache_b.layers.append(DynamicLayer())
 
     with torch.no_grad():
         x = hidden
-
         for i in range(starting_layer - 1, len(model.model.layers)):
-            cache_index = i - (starting_layer - 1)
-
             x = model.model.layers[i](
                 x,
                 position_ids= position_ids,
                 position_embeddings=position_embeddings,
-                past_key_value=cache_b.layers[cache_index]
             )[0]
             if x.dim() == 2:
                 x = x.unsqueeze(0)
@@ -175,7 +170,7 @@ def split_2(hidden, position_embeddings, position_ids, cache_b=None):
         # ---- Pick next token ----
         next_token_id = torch.argmax(logits[:, -1, :], dim=-1)
 
-    return  next_token_id, cache_b
+    return  next_token_id
 
 def perform_split_generation(tokens_to_generate):
     generated_token_ids = []
@@ -183,30 +178,18 @@ def perform_split_generation(tokens_to_generate):
     # Start with the original input ids
     current_input_ids = inputs["input_ids"]
     
-    cache_a = None
-    cache_b = None
-    position_embeddings = None
-    position_ids = None
-    first_pass = True
-    h1 = model.model.layers[stopping_layer - 1].register_forward_hook(hook_fn)
-    h2 = model.model.layers[stopping_layer - 1].register_forward_pre_hook(hook_pos, with_kwargs=True)
     for _ in range(tokens_to_generate):
         
-        hidden, position_embeddings, position_ids, cache_a = split_1(current_input_ids, cache_a)
+        hidden, position_embeddings, position_ids = split_1(current_input_ids)
         # perform split 1
         
-        if first_pass:
-            save_handoff_package(hidden, position_embeddings, position_ids)
-            #export captured["position_ids"], captured["position_embeddings"] and captured["hidden"]
+        save_handoff_package(hidden, position_embeddings, position_ids)
+        #export captured["position_ids"], captured["position_embeddings"] and captured["hidden"]
 
-            hidden, position_embeddings, position_ids = load_handoff_package(first_pass=first_pass)
-            #load file into memory
+        hidden, position_embeddings, position_ids = load_handoff_package()
+        #load file into memory
 
-        else:
-            save_handoff_package(hidden)
-            hidden = load_handoff_package(first_pass)
-
-        next_token_id, cache_b = split_2(hidden, position_embeddings, position_ids, cache_b)
+        next_token_id = split_2(hidden, position_embeddings, position_ids)
         #perform split 2 and generate the next token
 
         generated_token_ids.append(next_token_id.item())
@@ -218,13 +201,12 @@ def perform_split_generation(tokens_to_generate):
             eos_ids = [eos_ids]
         if next_token_id.item() in eos_ids:
             break
-        
+
         current_input_ids = torch.cat([current_input_ids, next_token_id.unsqueeze(0)], dim=-1)
         #Append new token to input for next pass
 
         #next step when len(current_input_ids) increases we call machine A to run its half  
-    h1.remove()
-    h2.remove()
+
     response = tokenizer.decode(generated_token_ids, skip_special_tokens=False)
     get_system_stats("==================== SPLIT GEN STATS ============================")
     return print(response)

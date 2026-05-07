@@ -1,5 +1,4 @@
-from transformers import AutoModelForCausalLM, AutoTokenizer, DynamicCache, DynamicLayer
-from transformers import AutoModelForCausalLM, AutoTokenizer, DynamicCache, DynamicLayer
+from transformers import AutoModelForCausalLM, AutoTokenizer, DynamicCache, DynamicLayer, AutoConfig
 import torch
 import time
 import os
@@ -12,18 +11,21 @@ device = "cpu"
 tokenizer = AutoTokenizer.from_pretrained(model_path)
 stopping_layer = 14
 starting_layer = stopping_layer + 1
+
+tokenizer = AutoTokenizer.from_pretrained(model_path)
+config = AutoConfig.from_pretrained(model_path)
+model = AutoModelForCausalLM.from_config(config)
+state_a = torch.load("./split-files/machine_b.pt")
+
+model.load_state_dict(state_a, strict=False)
+
+stopping_layer = 14
+starting_layer = stopping_layer + 1
+
+model.model.layers = model.model.layers[:starting_layer]
+
 tokens_to_generate = 200
 first_pass = True 
-
-model = AutoModelForCausalLM.from_pretrained(
-    model_path,
-    torch_dtype=torch.bfloat16,
-    device_map={"": "cpu"}
-)
-
-model.model.layers = torch.nn.ModuleList(
-    model.model.layers[14:]
-)
 
 model.eval()
 

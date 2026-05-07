@@ -1,4 +1,8 @@
-from transformers import AutoModelForCausalLM, AutoTokenizer, DynamicCache, DynamicLayer
+# ============================================================
+# IMPORTS / GLOBAL CONFIG
+# ============================================================
+
+from transformers import AutoModelForCausalLM, AutoTokenizer, DynamicCache, DynamicLayer, AutoConfig
 import torch
 import time
 import os
@@ -6,23 +10,27 @@ import socket
 import psutil
 import io 
 
+# ============================================================
+# MODEL LOADING / INITIALIZATION
+# ============================================================
+
 model_path = "./llama-3b"
 device = "cpu"
+
 tokenizer = AutoTokenizer.from_pretrained(model_path)
+config = AutoConfig.from_pretrained(model_path)
+model = AutoModelForCausalLM.from_config(config)
+state_a = torch.load("./split-files/machine_a.pt")
+
+model.load_state_dict(state_a, strict=False)
+
 stopping_layer = 14
 starting_layer = stopping_layer + 1
+
+model.model.layers = model.model.layers[:stopping_layer]
+
 tokens_to_generate = 50
 
-model = AutoModelForCausalLM.from_pretrained(
-    model_path,
-    torch_dtype=torch.bfloat16,
-    device_map={"": "cpu"}
-)
-
-# KEEP ONLY FIRST HALF
-model.model.layers = torch.nn.ModuleList(
-    model.model.layers[:14]
-)
 
 model.eval()
 
@@ -33,8 +41,14 @@ prompt = tokenizer.apply_chat_template(
     tokenize=False,
     add_generation_prompt=True
 )
+
 inputs = tokenizer(prompt, return_tensors="pt")
 captured = {}
+
+# ============================================================
+# MESSAGE PROTOCOL / SOCKET COMMUNICATION
+# ============================================================
+
 TAILSCALE_PORT = 65432
 
 MSG_FIRST_PASS = 1
@@ -83,6 +97,20 @@ def read_TCP_data(conn, length):
         # add packet binaries to data
     return data
 
+def send_to_machine_b(conn, filepath):
+    with open(filepath, "rb") as f:
+        # Open file in binary read mode
+        # tensor files contain raw serialized bytes so text would corrupt the data
+        data = f.read()
+        # load file into memory
+    conn.sendall(len(data).to_bytes(8, byteorder="big"))
+    # len(data).tobytes(8) = let the first 8 bytes = the file length
+    # byteorder = big = send the most siginificant byte first
+    # we are telling the receiver how much data is coming 
+    conn.sendall(data)
+    # sending the actual data
+    print(f"Sent {filepath} ({len(data)} bytes)")
+
 def setup_machine_a_conn():
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     # Create server socket
@@ -100,20 +128,9 @@ def setup_machine_a_conn():
     print(f"Machine B connected from {addr}")
     return server_socket, conn
 
-def send_to_machine_b(conn, filepath):
-    with open(filepath, "rb") as f:
-        # Open file in binary read mode
-        # tensor files contain raw serialized bytes so text would corrupt the data
-        data = f.read()
-        # load file into memory
-    conn.sendall(len(data).to_bytes(8, byteorder="big"))
-    # len(data).tobytes(8) = let the first 8 bytes = the file length
-    # byteorder = big = send the most siginificant byte first
-    # we are telling the receiver how much data is coming 
-    conn.sendall(data)
-    # sending the actual data
-    print(f"Sent {filepath} ({len(data)} bytes)")
-
+# ============================================================
+# VALIDATION / BENCHMARKING
+# ============================================================
 
 def get_system_stats(label):
     # CPU usage
@@ -137,6 +154,10 @@ def get_system_stats(label):
     else:
         print("GPU: not available")
 
+# ============================================================
+# FORWARD HOOK CAPTURE FUNCTIONS
+# ============================================================
+
 def hook_fn(module, input, output):
         hidden = output[0].detach()
         if hidden.dim() == 2:
@@ -159,6 +180,10 @@ def save_handoff_package(hidden, position_embeddings, position_ids, save_dir="./
 
 def save_hidden_only(hidden, save_dir="./handoff"):
     torch.save(hidden, f"{save_dir}/hidden.pt")
+
+# ============================================================
+# SPLIT EXECUTION (MACHINE A)
+# ============================================================
 
 def split_1(current_input_ids, cache_a=None):
     """
@@ -239,6 +264,12 @@ def run_machine_a(tokens_to_generate, conn):
     h2.remove()
     response = tokenizer.decode(generated_token_ids, skip_special_tokens=True)
     return response
+
+
+# ============================================================
+# MAIN ENTRYPOINT
+# ============================================================
+
 
 if __name__ == "__main__":
     server_socket, conn = setup_machine_a_conn()
