@@ -167,7 +167,7 @@ def get_system_stats(label):
         print("GPU: not available")
 
 def load_handoff_package(save_dir="./received", first_pass=True):
-    device = "cpu" #"cuda" if torch.cuda.is_available() else "cpu"
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     if first_pass:
         hidden = torch.load(f"{save_dir}/hidden.pt", map_location=device)
         cos = torch.load(f"{save_dir}/cos.pt", map_location=device)
