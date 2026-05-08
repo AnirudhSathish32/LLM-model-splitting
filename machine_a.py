@@ -22,7 +22,7 @@ def setup_model(stopping_layer:int, model_path):
 
     model_path = model_path
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = "cpu" # "cuda" if torch.cuda.is_available() else "cpu"
     tokenizer = AutoTokenizer.from_pretrained(model_path)
     config = AutoConfig.from_pretrained(model_path)
 

@@ -15,7 +15,7 @@ def setup_model(stopping_layer:int, model_path):
 
     model_path = model_path
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = "cpu" # "cuda" if torch.cuda.is_available() else "cpu"
     tokenizer = AutoTokenizer.from_pretrained(model_path)
     config = AutoConfig.from_pretrained(model_path)
 
@@ -47,7 +47,7 @@ def setup_model(stopping_layer:int, model_path):
     print(f"Load time: {time.time() - start:.2f}s")
     print("Machine B ready")
 
-    return model, inputs, tokenizer
+    return model, tokenizer
 
 
 MACHINE_A_TAILSCALE_IP = "100.74.100.92"  
@@ -278,7 +278,7 @@ def run_machine_b():
 
 if __name__ == "__main__":
     conn = setup_machine_b()
-    model, inputs, tokenizer = setup_model
+    model, tokenizer = setup_model
     try:
         run_machine_b(conn)
     finally:
