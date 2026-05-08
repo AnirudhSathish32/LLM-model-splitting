@@ -279,7 +279,7 @@ def run_machine_b():
 
 if __name__ == "__main__":
     conn = setup_machine_b()
-    model, tokenizer = setup_model
+    model, tokenizer = setup_model()
     try:
         run_machine_b(conn)
     finally:
