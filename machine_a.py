@@ -23,7 +23,7 @@ def setup_model(stopping_layer:int, model_path):
     print(torch.cuda.get_arch_list())
     model_path = model_path
 
-    device = "cpu" #"cuda" if torch.cuda.is_available() else "cpu"
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     tokenizer = AutoTokenizer.from_pretrained(model_path)
     config = AutoConfig.from_pretrained(model_path)
 
@@ -280,6 +280,7 @@ def run_machine_a(tokens_to_generate, stopping_layer, tokenizer, conn):
     h1.remove()
     h2.remove()
     response = tokenizer.decode(generated_token_ids, skip_special_tokens=True)
+
     return response
 
 
