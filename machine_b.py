@@ -10,7 +10,7 @@ import psutil
 import io 
 
 
-def setup_model(stopping_layer:int, model_path):
+def setup_model_b(stopping_layer:int, model_path):
     start = time.time()
     starting_layer = stopping_layer + 1
 
@@ -219,8 +219,8 @@ def run_machine_b(conn):
     first_pass = True
     token_count = 0 
     eos_detected = False
+    
     while True:
-        
         if first_pass:
             print("Machine B first pass")
             os.makedirs("./received", exist_ok=True)
@@ -271,7 +271,7 @@ if __name__ == "__main__":
     model_path = "./llama-3b"
 
     conn = setup_machine_b()
-    model, tokenizer = setup_model(stopping_layer, model_path)
+    model, tokenizer = setup_model_b(stopping_layer, model_path)
     try:
         run_machine_b(conn)
     finally:

@@ -18,9 +18,8 @@ import io
 
 captured = {}
 
-def setup_model(stopping_layer:int, model_path):
+def setup_model_a(stopping_layer:int, model_path):
     start = time.time()
-    print(torch.cuda.get_arch_list())
     model_path = model_path
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -290,13 +289,12 @@ def run_machine_a(tokens_to_generate, stopping_layer, tokenizer, conn):
 
 
 if __name__ == "__main__":
-
     stopping_layer = 14
     model_path = "./llama-3b"
     tokens_to_generate = 50
 
     server_socket, conn = setup_machine_a_conn()
-    model, inputs, tokenizer = setup_model(stopping_layer, model_path)
+    model, inputs, tokenizer = setup_model_a(stopping_layer, model_path)
     try:
         response = run_machine_a(tokens_to_generate, stopping_layer, tokenizer, conn)
         print("Response:", response)
