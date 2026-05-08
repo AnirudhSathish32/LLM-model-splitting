@@ -15,14 +15,15 @@ import io
 # ============================================================
 # MODEL LOADING / INITIALIZATION
 # ============================================================
+
 captured = {}
 
 def setup_model(stopping_layer:int, model_path):
     start = time.time()
-
+    print(torch.cuda.get_arch_list())
     model_path = model_path
 
-    device = "cpu" # "cuda" if torch.cuda.is_available() else "cpu"
+    device = "cpu" #"cuda" if torch.cuda.is_available() else "cpu"
     tokenizer = AutoTokenizer.from_pretrained(model_path)
     config = AutoConfig.from_pretrained(model_path)
 
@@ -54,7 +55,7 @@ def setup_model(stopping_layer:int, model_path):
         add_generation_prompt=True
     )
 
-    inputs = tokenizer(prompt, return_tensors="pt")
+    inputs = tokenizer(prompt, return_tensors="pt").to(device)
 
     print(f"Load time: {time.time() - start:.2f}s")
     print("Machine A ready")
@@ -290,10 +291,11 @@ def run_machine_a(tokens_to_generate, stopping_layer, tokenizer, conn):
 if __name__ == "__main__":
 
     stopping_layer = 14
+    model_path = "./llama-3b"
     tokens_to_generate = 50
 
     server_socket, conn = setup_machine_a_conn()
-    model, inputs, tokenizer = setup_model(stopping_layer, "./llama-3b")
+    model, inputs, tokenizer = setup_model(stopping_layer, model_path)
     try:
         response = run_machine_a(tokens_to_generate, stopping_layer, tokenizer, conn)
         print("Response:", response)

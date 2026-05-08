@@ -135,8 +135,6 @@ def receive_file(conn, save_path):
     # read exactly the first 8 bytes which contain the file size
     # int.from_bytes = turn bytes back into numbers
 
-    print(f"Receiving {length} bytes...")
-    
     data = read_TCP_data(conn, length)
     # read the payload
     
@@ -144,7 +142,7 @@ def receive_file(conn, save_path):
     # open destination file in binary write mode
         f.write(data)
         # write the data
-    print(f"File saved to {save_path}")
+    print(f"File saved to {save_path},({length}) bytes...")
 
 def get_system_stats(label):
     # CPU usage
@@ -169,13 +167,7 @@ def get_system_stats(label):
         print("GPU: not available")
 
 def load_handoff_package(save_dir="./received", first_pass=True):
-    device = "cpu"
-    """
-    if torch.cuda.is_available():
-        device = "cuda"
-    else:
-        device = "cpu"
-    """
+    device = "cpu" #"cuda" if torch.cuda.is_available() else "cpu"
     if first_pass:
         hidden = torch.load(f"{save_dir}/hidden.pt", map_location=device)
         cos = torch.load(f"{save_dir}/cos.pt", map_location=device)
@@ -220,7 +212,7 @@ def split_2(hidden, position_embeddings, position_ids, cache_b=None):
     return  next_token_id, cache_b
 
 def run_machine_b(conn):
-    
+
     cache_b = None
     position_embeddings = None
     position_ids = None
@@ -248,10 +240,6 @@ def run_machine_b(conn):
             receive_msg_file(conn, MSG_NEXT_PASS,"./received/cos.pt")
             hidden, position_embeddings, position_ids = load_handoff_package()
 
-        print(f"hidden device: {hidden.device}")
-        print(f"position_ids device: {position_ids.device}")
-        print(f"cos device: {position_embeddings[0].device}")
-        print(f"sin device: {position_embeddings[1].device}")
 
         print("Starting Split 2")
         next_token_id, cache_b = split_2(hidden, position_embeddings, position_ids, cache_b)
@@ -274,6 +262,7 @@ def run_machine_b(conn):
 
     get_system_stats("==================== SPLIT GEN STATS ============================")
     return
+
 
 
 if __name__ == "__main__":
