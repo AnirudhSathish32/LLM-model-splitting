@@ -29,8 +29,13 @@ print("Saved embed_tokens")
 
 # Save norm and lm_head separately
 head_weights = {k: v.contiguous() for k, v in full_state.items() 
-                if k.startswith("model.norm") or k.startswith("lm_head")}
+                if k.startswith("lm_head")}
 save_file(head_weights, f"{output_dir}/head.safetensors")
 print("Saved head")
+
+norm_weights = {k: v.contiguous() for k, v in full_state.items() 
+                if k.startswith("model.norm")}
+save_file(norm_weights, f"{output_dir}/norm.safetensors")
+print("Saved norm")
 
 print("Done — per layer files created")
