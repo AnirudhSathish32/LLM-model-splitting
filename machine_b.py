@@ -278,8 +278,12 @@ def run_machine_b():
 
 
 if __name__ == "__main__":
+
+    stopping_layer = 14
+    model_path = "./llama-3b"
+
     conn = setup_machine_b()
-    model, tokenizer = setup_model()
+    model, tokenizer = setup_model(stopping_layer, model_path)
     try:
         run_machine_b(conn)
     finally:
