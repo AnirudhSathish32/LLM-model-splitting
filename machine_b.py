@@ -18,8 +18,9 @@ def setup_model(stopping_layer:int, model_path):
     device = "cpu" # "cuda" if torch.cuda.is_available() else "cpu"
     tokenizer = AutoTokenizer.from_pretrained(model_path)
     config = AutoConfig.from_pretrained(model_path)
+    original_total_layers = config.num_hidden_layers 
 
-    config.num_hidden_layers = stopping_layer
+    config.num_hidden_layers = original_total_layers - stopping_layer
 
     with init_empty_weights():
         model = AutoModelForCausalLM.from_config(config)
@@ -27,15 +28,18 @@ def setup_model(stopping_layer:int, model_path):
     state_b = {}
 
     state_b.update(load_file(f"./layers/head.safetensors", device=device))
-    state_b.update(load_file(f"./layers/norm.safetensors", device=device))
+    
     for i in range(starting_layer, len(model.model.layers)):
         original_layer = load_file(f"./layers/layer_{i}.safetensors")
         new_idx = i - starting_layer
 
         for key, value in original_layer.items():
-            new_key = key.replace(f"layers.{i}.", f"layers.{new_idx}.")
+            new_key = key.replace(f"model.layers.{i}.", f"model.layers.{new_idx}.")
             state_b[new_key] = value
         print(f"Loaded layer {i}")
+
+    state_b.update(load_file(f"./layers/norm.safetensors", device=device))
+    state_b.update(load_file(f"./layers/head.safetensors", device=device))
 
     model.load_state_dict(
         state_b,
