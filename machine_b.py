@@ -220,7 +220,7 @@ def split_2(hidden, position_embeddings, position_ids, cache_b=None):
 
     return  next_token_id, cache_b
 
-def run_machine_b():
+def run_machine_b(conn):
     
     cache_b = None
     position_embeddings = None
