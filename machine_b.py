@@ -27,7 +27,7 @@ def setup_model(stopping_layer:int, model_path):
     state_b = {}
 
     state_b.update(load_file(f"./layers/head.safetensors", device=device))
-    state_b.update(load_file(f"./layers/norm.safetensors", device=device)))
+    state_b.update(load_file(f"./layers/norm.safetensors", device=device))
     for i in range(starting_layer, len(model.model.layers)):
         original_layer = load_file(f"./layers/layer_{i}.safetensors")
         new_idx = i - starting_layer
