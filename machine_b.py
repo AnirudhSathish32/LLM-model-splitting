@@ -1,33 +1,54 @@
 from transformers import AutoModelForCausalLM, AutoTokenizer, DynamicCache, DynamicLayer, AutoConfig
+from accelerate import init_empty_weights
+from safetensors.torch import load_file
 import torch
 import time
 import os
+import socket 
 import psutil
-import socket
-import io
+import io 
 
-model_path = "./llama-3b"
-device = "cpu"
-tokenizer = AutoTokenizer.from_pretrained(model_path)
-stopping_layer = 14
-starting_layer = stopping_layer + 1
 
-tokenizer = AutoTokenizer.from_pretrained(model_path)
-config = AutoConfig.from_pretrained(model_path)
-model = AutoModelForCausalLM.from_config(config)
-state_a = torch.load("./split-files/machine_b.pt")
+def setup_model(stopping_layer:int, model_path):
+    start = time.time()
+    starting_layer = stopping_layer + 1
 
-model.load_state_dict(state_a, strict=False)
+    model_path = model_path
 
-stopping_layer = 14
-starting_layer = stopping_layer + 1
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    config = AutoConfig.from_pretrained(model_path)
 
-model.model.layers = model.model.layers[:starting_layer]
+    config.num_hidden_layers = stopping_layer
 
-tokens_to_generate = 200
-first_pass = True 
+    with init_empty_weights():
+        model = AutoModelForCausalLM.from_config(config)
 
-model.eval()
+    state_b = {}
+
+    state_b.update(load_file(f"./layers/head.safetensors", device=device))
+    for i in range(starting_layer, len(model.model.layers)):
+        original_layer = load_file(f"./layers/layer_{i}.safetensors")
+        new_idx = i - starting_layer
+
+        for key, value in original_layer.items():
+            new_key = key.replace(f"layers.{i}.", f"layers.{new_idx}.")
+            state_b[new_key] = value
+        print(f"Loaded layer {i}")
+
+    model.load_state_dict(
+        state_b,
+        strict=False,
+        assign=True
+    )
+
+    model.eval()
+
+    print(f"Load time: {time.time() - start:.2f}s")
+    print("Machine B ready")
+
+    return model, inputs, tokenizer
+
 
 MACHINE_A_TAILSCALE_IP = "100.74.100.92"  
 TAILSCALE_PORT = 65432
@@ -198,7 +219,7 @@ def split_2(hidden, position_embeddings, position_ids, cache_b=None):
 
     return  next_token_id, cache_b
 
-def run_machine_b(tokens_to_generate):
+def run_machine_b():
     
     cache_b = None
     position_embeddings = None
@@ -257,6 +278,7 @@ def run_machine_b(tokens_to_generate):
 
 if __name__ == "__main__":
     conn = setup_machine_b()
+    model, inputs, tokenizer = setup_model
     try:
         run_machine_b(conn)
     finally:

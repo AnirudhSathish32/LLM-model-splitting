@@ -3,6 +3,8 @@
 # ============================================================
 
 from transformers import AutoModelForCausalLM, AutoTokenizer, DynamicCache, DynamicLayer, AutoConfig
+from accelerate import init_empty_weights
+from safetensors.torch import load_file
 import torch
 import time
 import os
@@ -13,37 +15,51 @@ import io
 # ============================================================
 # MODEL LOADING / INITIALIZATION
 # ============================================================
-
-model_path = "./llama-3b"
-device = "cpu"
-
-tokenizer = AutoTokenizer.from_pretrained(model_path)
-config = AutoConfig.from_pretrained(model_path)
-model = AutoModelForCausalLM.from_config(config)
-state_a = torch.load("./split-files/machine_a.pt")
-
-model.load_state_dict(state_a, strict=False)
-
-stopping_layer = 14
-starting_layer = stopping_layer + 1
-
-model.model.layers = model.model.layers[:stopping_layer]
-
-tokens_to_generate = 50
-
-
-model.eval()
-
-# Prompt setup lives on Machine A — it drives the generation loop
-messages = [{"role": "user", "content": "hello world"}]
-prompt = tokenizer.apply_chat_template(
-    messages,
-    tokenize=False,
-    add_generation_prompt=True
-)
-
-inputs = tokenizer(prompt, return_tensors="pt")
 captured = {}
+
+def setup_model(stopping_layer:int, model_path):
+    start = time.time()
+
+    model_path = model_path
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    config = AutoConfig.from_pretrained(model_path)
+
+    config.num_hidden_layers = stopping_layer
+
+    with init_empty_weights():
+        model = AutoModelForCausalLM.from_config(config)
+
+    state_a = {}
+
+    state_a.update(load_file(f"./layers/embed_tokens.safetensors", device=device))
+    for i in range(stopping_layer):
+        state_a.update(load_file(f"./layers/layer_{i}.safetensors", device=device))
+        print(f"Loaded layer {i}")
+
+    model.load_state_dict(
+        state_a,
+        strict=False,
+        assign=True
+    )
+
+    model.eval()
+
+    # Prompt setup lives on Machine A — it drives the generation loop
+    messages = [{"role": "user", "content": "hello world"}]
+    prompt = tokenizer.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=True
+    )
+
+    inputs = tokenizer(prompt, return_tensors="pt")
+
+    print(f"Load time: {time.time() - start:.2f}s")
+    print("Machine A ready")
+
+    return model, inputs, tokenizer
 
 # ============================================================
 # MESSAGE PROTOCOL / SOCKET COMMUNICATION
@@ -206,7 +222,7 @@ def split_1(current_input_ids, cache_a=None):
 
     return hidden, position_embeddings, position_ids, cache_a
 
-def run_machine_a(tokens_to_generate, conn):
+def run_machine_a(tokens_to_generate, stopping_layer, tokenizer, conn):
     generated_token_ids = []
     
     current_input_ids = inputs["input_ids"]
@@ -272,10 +288,15 @@ def run_machine_a(tokens_to_generate, conn):
 
 
 if __name__ == "__main__":
+
+    stopping_layer = 14
+    tokens_to_generate = 50
+
     server_socket, conn = setup_machine_a_conn()
+    model, inputs, tokenizer = setup_model(stopping_layer, "./llama-3b")
     try:
-        result = run_machine_a(tokens_to_generate, conn)
-        print("Response:", result)
+        response = run_machine_a(tokens_to_generate, stopping_layer, tokenizer, conn)
+        print("Response:", response)
     finally:
         conn.close()
         server_socket.close()
