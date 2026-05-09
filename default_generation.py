@@ -5,6 +5,47 @@ import time
 import threading
 import os
 
+
+def default_generation(model_path, prompt):
+    model = AutoModelForCausalLM.from_pretrained(
+        model_path, 
+        output_hidden_states=True)
+    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    inputs = tokenizer(prompt, return_tensors="pt")
+    model.eval()
+    layer_outputs = capture_layers(model, inputs, "Full Generation")
+    
+
+
+    
+def capture_layers(model, inputs, label):
+    print(f"Capturing {label} layer outputs...")
+    layer_outputs = {}
+
+    def make_hook(idx):
+        def hook_fn(module, input, output):
+            hidden = output[0].detach().clone()
+            if hidden.dim() == 2:
+                hidden = hidden.unsqueeze(0)
+            layer_outputs[idx] = hidden
+        return hook_fn
+
+    hooks = []
+    for i in range(len(model.model.layers)):
+        hooks.append(model.model.layers[i].register_forward_hook(make_hook(i)))
+
+
+    with torch.no_grad():
+        output_ids = model.generate(
+            **inputs,
+            max_new_tokens=20,
+            do_sample=True,
+            temperature=0.7
+        )
+
+    output_response = tokenizer.decode(output_ids[0], skip_special_tokens=False)
+    return output_response 
+
 # ================MEMORY MONITORING===============
 
 process = psutil.Process(os.getpid())
@@ -29,10 +70,9 @@ start = time.time()
 load_start = time.time()
 
 
-model_path = "./llama-8b"
+model_path = "./llama-3b"
 model = AutoModelForCausalLM.from_pretrained(
-    model_path,
-    dtype=torch.float32, 
+    model_path, 
     output_hidden_states=True)
 
 load_end = time.time()
@@ -59,13 +99,7 @@ monitor_thread.start()
 gen_start = time.time()
 
 
-with torch.no_grad():
-    output_ids = model.generate(
-        **inputs,
-        max_new_tokens=20,
-        do_sample=True,
-        temperature=0.7
-    )
+
     
 gen_end = time.time()
 

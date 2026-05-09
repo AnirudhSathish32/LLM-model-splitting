@@ -18,7 +18,7 @@ import io
 
 captured = {}
 
-def setup_model_a(stopping_layer:int, model_path):
+def setup_model_a(stopping_layer:int, model_path, prompt):
     start = time.time()
     model_path = model_path
 
@@ -47,7 +47,7 @@ def setup_model_a(stopping_layer:int, model_path):
     model.eval()
 
     # Prompt setup lives on Machine A — it drives the generation loop
-    messages = [{"role": "user", "content": "hello world"}]
+    messages = [{"role": "user", "content": prompt}]
     prompt = tokenizer.apply_chat_template(
         messages,
         tokenize=False,
@@ -71,6 +71,25 @@ MSG_FIRST_PASS = 1
 MSG_NEXT_PASS = 2
 MSG_TOKEN = 3
 MSG_EOS = 4
+
+def send_layer_outputs(conn, layer_outputs):
+    """Serialize and send layer outputs dict over socket"""
+    buffer = io.BytesIO()
+    # Convert to CPU before sending
+    cpu_outputs = {k: v.cpu() for k, v in layer_outputs.items()}
+    torch.save(cpu_outputs, buffer)
+    data = buffer.getvalue()
+    conn.sendall(len(data).to_bytes(8, byteorder="big"))
+    conn.sendall(data)
+    print(f"Sent {len(layer_outputs)} layer outputs ({len(data)} bytes)")
+
+def receive_layer_outputs(conn):
+    """Receive and deserialize layer outputs dict from socket"""
+    length = int.from_bytes(read_TCP_data(conn, 8), byteorder="big")
+    data   = read_TCP_data(conn, length)
+    layer_outputs = torch.load(io.BytesIO(data), map_location="cpu")
+    print(f"Received {len(layer_outputs)} layer outputs")
+    return layer_outputs
 
 #def handle_message(msg_type, payload):
     #"""
@@ -224,14 +243,41 @@ def split_1(current_input_ids, cache_a=None):
 
 def run_machine_a(tokens_to_generate, stopping_layer, tokenizer, conn):
     generated_token_ids = []
-    
     current_input_ids = inputs["input_ids"]
-    
     cache_a = None
     position_embeddings = None
     position_ids = None
     first_pass = True
     token_count = 0 
+
+    ttft_start  = time.time()
+    ttft        = None
+    layer_outputs = {}
+    layer_times   = {}
+    ttft_result   = {"ttft": None, "start": time.time(), "fired": False}
+
+    def make_validation_hook(idx):
+        def hook_fn_validation(module, input, output):
+            t = time.time()
+
+            if idx == 0 and not ttft_result["fired"]:
+                ttft_result["ttft"]  = t - ttft_result["start"]
+                ttft_result["fired"] = True
+
+            hidden = output[0].detach().clone()
+            if hidden.dim() == 2:
+                hidden = hidden.unsqueeze(0)
+            layer_outputs[idx] = hidden
+            layer_times[idx]   = time.time() - t
+        return hook_fn_validation
+
+    # Register validation hooks on all layers
+    validation_hooks = []
+    for i in range(len(model.model.layers)):
+        validation_hooks.append(
+            model.model.layers[i].register_forward_hook(make_validation_hook(i))
+        )
+
 
     h1 = model.model.layers[stopping_layer - 1].register_forward_hook(hook_fn)
     h2 = model.model.layers[stopping_layer - 1].register_forward_pre_hook(hook_pos, with_kwargs=True)
@@ -243,12 +289,18 @@ def run_machine_a(tokens_to_generate, stopping_layer, tokenizer, conn):
         # perform split 1
         
         if first_pass:
+
+            for h in validation_hooks:
+                h.remove()
+            validation_hooks = []
+
             save_handoff_package(hidden, position_embeddings, position_ids)
 
             send_msg_file(conn, MSG_FIRST_PASS,"./handoff/hidden.pt")
             send_msg_file(conn, MSG_FIRST_PASS,"./handoff/sin.pt")
             send_msg_file(conn, MSG_FIRST_PASS,"./handoff/position_ids.pt")
             send_msg_file(conn, MSG_FIRST_PASS,"./handoff/cos.pt")
+
             first_pass = False
 
             #export captured["position_ids"], captured["position_embeddings"] and captured["hidden"]
@@ -264,6 +316,19 @@ def run_machine_a(tokens_to_generate, stopping_layer, tokenizer, conn):
         # call machine_b
         msg_type, payload = read_message(conn)
 
+        if ttft is None:
+            ttft = time.time() - ttft_start
+            print(f"\n--- First Pass Validation Capture ---")
+            print(f"Layers captured:     {len(layer_outputs)}")
+            print(f"Time to first token: {ttft:.3f}s")
+            print(f"{'Layer':<8} {'Shape':<25} {'Time (ms)':<12}")
+            print(f"{'-'*45}")
+            for idx in sorted(layer_outputs.keys()):
+                shape   = str(tuple(layer_outputs[idx].shape))
+                elapsed = layer_times.get(idx, 0) * 1000
+                print(f"{idx:<8} {shape:<25} {elapsed:<12.3f}")
+            print(f"{'-'*45}\n")
+
         if msg_type == MSG_EOS:
             print("received EOS")
             break
@@ -276,27 +341,33 @@ def run_machine_a(tokens_to_generate, stopping_layer, tokenizer, conn):
             token_count += 1
             print(token_count)
 
+    print("Sending Machine A layer outputs to Machine B...")
+    send_layer_outputs(conn, layer_outputs)
+    print("Receiving Machine B layer outputs...")
+    machine_b_layer_outputs = receive_layer_outputs(conn)
+
     h1.remove()
     h2.remove()
+    all_layer_outputs = {**layer_outputs, **machine_b_layer_outputs}
     response = tokenizer.decode(generated_token_ids, skip_special_tokens=True)
 
-    return response
+    return response, all_layer_outputs
 
 
 # ============================================================
 # MAIN ENTRYPOINT
 # ============================================================
 
-
 if __name__ == "__main__":
     stopping_layer = 14
     model_path = "./llama-3b"
+    prompt = "Hello World"
     tokens_to_generate = 50
 
     server_socket, conn = setup_machine_a_conn()
-    model, inputs, tokenizer = setup_model_a(stopping_layer, model_path)
+    model, inputs, tokenizer = setup_model_a(stopping_layer, model_path, prompt)
     try:
-        response = run_machine_a(tokens_to_generate, stopping_layer, tokenizer, conn)
+        response, all_layer_outputs = run_machine_a(tokens_to_generate, stopping_layer, tokenizer, conn)
         print("Response:", response)
     finally:
         conn.close()

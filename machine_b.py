@@ -49,6 +49,9 @@ def setup_model_b(stopping_layer:int, model_path):
 
     return model, tokenizer
 
+# ============================================================
+# MESSAGE PROTOCOL / SOCKET COMMUNICATION
+# ============================================================
 
 MACHINE_A_TAILSCALE_IP = "100.74.100.92"  
 TAILSCALE_PORT = 65432
@@ -57,6 +60,8 @@ MSG_FIRST_PASS = 1
 MSG_NEXT_PASS = 2
 MSG_TOKEN = 3
 MSG_EOS = 4
+
+
 
 def send_token(conn, token):
     buffer = io.BytesIO()
@@ -111,6 +116,25 @@ def read_TCP_data(conn, length):
         # add packet binaries to data
     return data
 
+def send_layer_outputs(conn, layer_outputs):
+    """Serialize and send layer outputs dict over socket"""
+    buffer = io.BytesIO()
+    # Convert to CPU before sending
+    cpu_outputs = {k: v.cpu() for k, v in layer_outputs.items()}
+    torch.save(cpu_outputs, buffer)
+    data = buffer.getvalue()
+    conn.sendall(len(data).to_bytes(8, byteorder="big"))
+    conn.sendall(data)
+    print(f"Sent {len(layer_outputs)} layer outputs ({len(data)} bytes)")
+
+def receive_layer_outputs(conn):
+    """Receive and deserialize layer outputs dict from socket"""
+    length = int.from_bytes(read_TCP_data(conn, 8), byteorder="big")
+    data   = read_TCP_data(conn, length)
+    layer_outputs = torch.load(io.BytesIO(data), map_location="cpu")
+    print(f"Received {len(layer_outputs)} layer outputs")
+    return layer_outputs
+
 def setup_machine_b(retries=20, delay=3):
     print(f"Machine B connecting to {MACHINE_A_TAILSCALE_IP}:{TAILSCALE_PORT}")
     for attempt in range(1, retries + 1):
@@ -143,6 +167,10 @@ def receive_file(conn, save_path):
         f.write(data)
         # write the data
     print(f"File saved to {save_path},({length}) bytes...")
+
+# ============================================================
+# VALIDATION / BENCHMARKING
+# ============================================================
 
 def get_system_stats(label):
     # CPU usage
@@ -179,6 +207,10 @@ def load_handoff_package(save_dir="./received", first_pass=True):
         hidden = torch.load(f"{save_dir}/hidden.pt", map_location=device)
         return hidden
 
+# ============================================================
+# SPLIT EXECUTION (MACHINE B)
+# ============================================================
+
 def split_2(hidden, position_embeddings, position_ids, cache_b=None):
     """
     ---- Machine B ----
@@ -211,14 +243,29 @@ def split_2(hidden, position_embeddings, position_ids, cache_b=None):
 
     return  next_token_id, cache_b
 
-def run_machine_b(conn):
 
+def run_machine_b(conn):
+    generated_token_ids = []
     cache_b = None
     position_embeddings = None
     position_ids = None
     first_pass = True
     token_count = 0 
     eos_detected = False
+
+    layer_outputs_b = {}
+    layer_times_b   = {}
+
+    def make_validation_hook_b(local_idx, original_idx):
+        def hook_fn_validation(module, input, output):
+            t      = time.time()
+            hidden = output[0].detach().clone()
+            if hidden.dim() == 2:
+                hidden = hidden.unsqueeze(0)
+            # Store at original index so Machine A can compare correctly
+            layer_outputs_b[original_idx] = hidden
+            layer_times_b[original_idx]   = time.time() - t
+        return hook_fn_validation
     
     while True:
         if first_pass:
@@ -258,12 +305,24 @@ def run_machine_b(conn):
             break
         else:
             print("sending token")
+            generated_token_ids.append(next_token_id.item())
             send_token(conn, next_token_id)
 
+    print("Receiving Machine A layer outputs...")
+    machine_a_layer_outputs = receive_layer_outputs(conn)
+
+    print("Sending Machine B layer outputs to Machine A...")
+    send_layer_outputs(conn, layer_outputs_b)
+
+
+    all_layer_outputs = {**layer_outputs_b, **machine_a_layer_outputs}
+    response = tokenizer.decode(generated_token_ids, skip_special_tokens=True)
     get_system_stats("==================== SPLIT GEN STATS ============================")
-    return
+    return response, all_layer_outputs
 
-
+# ============================================================
+# MAIN ENTRYPOINT
+# ============================================================
 
 if __name__ == "__main__":
 
@@ -273,6 +332,7 @@ if __name__ == "__main__":
     conn = setup_machine_b()
     model, tokenizer = setup_model_b(stopping_layer, model_path)
     try:
-        run_machine_b(conn)
+        response, all_layer_outputs = run_machine_b(conn)
+        print("response:", response)
     finally:
         conn.close()
