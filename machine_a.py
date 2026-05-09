@@ -82,6 +82,16 @@ def send_layers(conn, layers):
     conn.sendall(payload)
     print(f"Layers sent to Machine B")
 
+def receive_layers(conn):
+    msg_type, payload = read_message(conn)
+
+    if msg_type != MSG_LAYER:
+        raise ValueError(
+            f"Expected MSG_LAYER, got {msg_type}"
+        )
+
+    return torch.load(io.BytesIO(payload))
+
 #def handle_message(msg_type, payload):
     #"""
     #    message types {1:INIT, 2:STEP, 3:XXXX}
@@ -335,7 +345,7 @@ def run_machine_a(tokens_to_generate, stopping_layer, tokenizer, conn):
     print("Sending Machine A layer outputs to Machine B...")
     send_layers(conn, layer_outputs)
     print("Receiving Machine B layer outputs...")
-    machine_b_layer_outputs = read_message(conn)[1]
+    machine_b_layer_outputs = receive_layers(conn)
 
     h1.remove()
     h2.remove()
