@@ -84,13 +84,12 @@ def send_layers(conn, layers):
 
 def receive_layers(conn):
     msg_type, payload = read_message(conn)
-
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     if msg_type != MSG_LAYER:
         raise ValueError(
             f"Expected MSG_LAYER, got {msg_type}"
         )
-
-    return torch.load(io.BytesIO(payload))
+    return torch.load(io.BytesIO(payload), map_location=device)
 
 #def handle_message(msg_type, payload):
     #"""
