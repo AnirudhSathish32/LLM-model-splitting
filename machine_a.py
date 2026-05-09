@@ -71,25 +71,16 @@ MSG_FIRST_PASS = 1
 MSG_NEXT_PASS = 2
 MSG_TOKEN = 3
 MSG_EOS = 4
+MSG_LAYER = 5
 
-def send_layer_outputs(conn, layer_outputs):
-    """Serialize and send layer outputs dict over socket"""
+def send_layers(conn, layers):
     buffer = io.BytesIO()
-    # Convert to CPU before sending
-    cpu_outputs = {k: v.cpu() for k, v in layer_outputs.items()}
-    torch.save(cpu_outputs, buffer)
-    data = buffer.getvalue()
-    conn.sendall(len(data).to_bytes(8, byteorder="big"))
-    conn.sendall(data)
-    print(f"Sent {len(layer_outputs)} layer outputs ({len(data)} bytes)")
-
-def receive_layer_outputs(conn):
-    """Receive and deserialize layer outputs dict from socket"""
-    length = int.from_bytes(read_TCP_data(conn, 8), byteorder="big")
-    data   = read_TCP_data(conn, length)
-    layer_outputs = torch.load(io.BytesIO(data), map_location="cpu")
-    print(f"Received {len(layer_outputs)} layer outputs")
-    return layer_outputs
+    torch.save(layers, buffer)
+    payload = buffer.getvalue()
+    conn.sendall(MSG_LAYER.to_bytes(1, byteorder="big"))
+    conn.sendall(len(payload).to_bytes(8, byteorder="big"))
+    conn.sendall(payload)
+    print(f"Layers sent to Machine B")
 
 #def handle_message(msg_type, payload):
     #"""
@@ -342,9 +333,9 @@ def run_machine_a(tokens_to_generate, stopping_layer, tokenizer, conn):
             print(token_count)
 
     print("Sending Machine A layer outputs to Machine B...")
-    send_layer_outputs(conn, layer_outputs)
+    send_layers(conn, layer_outputs)
     print("Receiving Machine B layer outputs...")
-    machine_b_layer_outputs = receive_layer_outputs(conn)
+    machine_b_layer_outputs = read_message(conn)[1]
 
     h1.remove()
     h2.remove()
