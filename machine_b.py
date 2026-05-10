@@ -24,14 +24,16 @@ def setup_model_b(stopping_layer:int, model_path):
     with init_empty_weights():
         model = AutoModelForCausalLM.from_config(config)
 
+    model_name = os.path.basename(model_path)
+    layers_dir = f"./layers/{model_name}"
     state_b = {}
 
     for i in range(starting_layer, original_total_layers):
-        state_b.update(load_file(f"./layers/layer_{i}.safetensors", device=device))
+        state_b.update(load_file(f"{layers_dir}/layer_{i}.safetensors", device=device))
         print(f"Loaded layer {i}")
 
-    state_b.update(load_file(f"./layers/norm.safetensors", device=device))
-    state_b.update(load_file(f"./layers/head.safetensors", device=device))
+    state_b.update(load_file(f"{layers_dir}/norm.safetensors", device=device))
+    state_b.update(load_file(f"{layers_dir}/head.safetensors", device=device))
 
     model.load_state_dict(
         state_b,
