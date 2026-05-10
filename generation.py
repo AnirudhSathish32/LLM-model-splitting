@@ -120,7 +120,7 @@ def default_generation(model_path, prompt, stopping_layer):
             **inputs,
             max_new_tokens=20,
             do_sample=True,
-            temperature=0.7
+            use_cache=True
         )
     gen_time = time.time() - gen_start
 
