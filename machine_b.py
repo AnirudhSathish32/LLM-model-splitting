@@ -330,7 +330,7 @@ if __name__ == "__main__":
     stopping_layer = 14
     model_path = "./llama-3b"
 
-    conn = setup_machine_b()
+    conn = setup_machine_b_conn()
     model, tokenizer = setup_model_b(stopping_layer, model_path)
     try:
         response, all_layer_outputs = run_machine_b(tokenizer, conn)

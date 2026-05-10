@@ -125,4 +125,3 @@ if __name__ == "__main__":
     print(f"{'='*55}")
 
     conn.close()
-    server_socket.close()
