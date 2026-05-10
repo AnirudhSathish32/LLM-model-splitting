@@ -243,7 +243,7 @@ def split_2(hidden, position_embeddings, position_ids, cache_b=None):
     return  next_token_id, cache_b
 
 
-def run_machine_b(conn):
+def run_machine_b(tokenizer, conn):
     generated_token_ids = []
     cache_b = None
     position_embeddings = None
@@ -331,7 +331,7 @@ if __name__ == "__main__":
     conn = setup_machine_b()
     model, tokenizer = setup_model_b(stopping_layer, model_path)
     try:
-        response, all_layer_outputs = run_machine_b(conn)
+        response, all_layer_outputs = run_machine_b(tokenizer, conn)
         print("response:", response)
     finally:
         conn.close()
