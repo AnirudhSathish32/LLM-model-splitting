@@ -89,7 +89,7 @@ if __name__ == "__main__":
 
     # ---- Split generation ----
     print("\n[2] Running split generation...")
-    server_socket, conn = machine_b.setup_machine_b_conn()
+    conn = machine_b.setup_machine_b_conn()
     model, tokenizer = machine_b.setup_model_b(stopping_layer, model_path)
     split_monitor = ResourceMonitor()
     split_monitor.start()

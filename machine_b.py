@@ -136,7 +136,7 @@ def read_TCP_data(conn, length):
         # add packet binaries to data
     return data
 
-def setup_machine_b(retries=20, delay=3):
+def setup_machine_b_conn(retries=20, delay=3):
     print(f"Machine B connecting to {MACHINE_A_TAILSCALE_IP}:{TAILSCALE_PORT}")
     for attempt in range(1, retries + 1):
         try:
