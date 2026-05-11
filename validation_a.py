@@ -53,7 +53,7 @@ def validate_all_layers(full_outputs, split_outputs, cos_threshold=0.99, toleran
     print(f"\n{'='*65}")
     print("LAYER VALIDATION — Full vs Split (all 28 layers)")
     print(f"{'='*65}")
-    print(f"{'Layer':<8} {'Max Diff':<14} {'Mean Diff':<14} {'Cos Sim':<12} {'Match'}")
+    print(f"{'Layer':<8} {'Mean Diff':<14} {'Cos Sim':<12} {'Match'}")
     print(f"{'-'*65}")
 
     all_match = True
