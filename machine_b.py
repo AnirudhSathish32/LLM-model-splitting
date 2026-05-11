@@ -258,7 +258,7 @@ def run_machine_b(tokenizer, model, stopping_layer, conn):
     layer_times_b   = {}
 
     def make_validation_hook(idx):
-        original_idx = idx + stopping_layer + 1
+        original_idx = idx + stopping_layer
         def hook_fn_validation(module, input, output):
             t = time.time()
             hidden = output[0].detach().clone()
@@ -270,7 +270,7 @@ def run_machine_b(tokenizer, model, stopping_layer, conn):
 
     # Register validation hooks on all layers
     validation_hooks = []
-    for i in range(len(model.model.layers)):
+    for i in range(len(model.model.layers) + 1):
         validation_hooks.append(
             model.model.layers[i].register_forward_hook(make_validation_hook(i))
         )
