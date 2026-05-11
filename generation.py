@@ -81,6 +81,7 @@ def capture_layers(model, inputs, label, stopping_layer):
     # Run one forward pass to populate everything
     with torch.no_grad():
         model(**inputs)
+        
 
     # Remove all hooks
     for h in hooks:
@@ -115,7 +116,8 @@ def default_generation(model_path, prompt, stopping_layer, tokens_to_generate):
     model = AutoModelForCausalLM.from_pretrained(
         model_path, 
         device_map=DEVICE,
-        dtype=DTYPE
+        dtype=DTYPE,
+        do_sample=False
         )
     
     tokenizer = AutoTokenizer.from_pretrained(model_path)

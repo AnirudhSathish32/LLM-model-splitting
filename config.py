@@ -9,7 +9,7 @@ import os
 # ================================================================
 # MODEL CONFIG
 # ================================================================
-MODEL_PATH     = "./llama-8b"
+MODEL_PATH     = "./llama-3b"
 STOPPING_LAYER = 16
 DTYPE = torch.float16
 

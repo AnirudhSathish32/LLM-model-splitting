@@ -119,7 +119,7 @@ if __name__ == "__main__":
     # ---- Response Comparison ----
     
     print(f"\n{'='*55}")
-    print("RESOURCE COMPARISON")
+    print("RESPONSE COMPARISON")
     print(f"{'='*55}")
     print(f"Split Response: {split_response}")
     print(f"{'-'*55}")
