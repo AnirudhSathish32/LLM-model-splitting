@@ -8,7 +8,8 @@ from config import (
     MODEL_PATH,
     PROMPT,
     STOPPING_LAYER,
-    TOKENS_TO_GENERATE
+    TOKENS_TO_GENERATE,
+    DEVICE
 )
 
 def capture_layers(model, inputs, label, stopping_layer):
@@ -110,10 +111,9 @@ def capture_layers(model, inputs, label, stopping_layer):
 
 
 def default_generation(model_path, prompt, stopping_layer, tokens_to_generate):
-    device = "cuda" if torch.cuda.is_available() else "cpu"
     model = AutoModelForCausalLM.from_pretrained(
         model_path, 
-        device_map=device
+        device_map=DEVICE
         )
     
     tokenizer = AutoTokenizer.from_pretrained(model_path)
@@ -126,7 +126,7 @@ def default_generation(model_path, prompt, stopping_layer, tokens_to_generate):
     )
     
     inputs = tokenizer(prompt, return_tensors="pt")
-    inputs = {k: v.to(device) for k, v in inputs.items()}
+    inputs = {k: v.to(DEVICE) for k, v in inputs.items()}
 
     model.eval()
 
