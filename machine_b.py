@@ -41,9 +41,8 @@ def setup_model_b(stopping_layer:int, model_path):
         assign=True
     )
 
-    kept_layers = model.model.layers[starting_layer:]
+    kept_layers = model.model.layers[stopping_layer:]
     model.model.layers = nn.ModuleList(kept_layers)
-    print(len(model.model.layers))
 
     model.eval()
 
