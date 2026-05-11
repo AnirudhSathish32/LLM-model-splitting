@@ -57,7 +57,7 @@ def setup_model_b(stopping_layer:int, model_path):
     model.model.layers = nn.ModuleList(kept_layers)
     
     for i, layer in enumerate(model.model.layers):
-        print(i, layer.input_layernorm.weight.DEVICE)
+        print(i, layer.input_layernorm.weight.device)
 
     model.eval()
 
