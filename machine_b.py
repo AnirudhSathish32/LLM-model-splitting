@@ -12,7 +12,6 @@ import io
 
 def setup_model_b(stopping_layer:int, model_path):
     start = time.time()
-    starting_layer = stopping_layer + 1
 
     model_path = model_path
 
@@ -28,7 +27,7 @@ def setup_model_b(stopping_layer:int, model_path):
     layers_dir = f"./layers/{model_name}"
     state_b = {}
 
-    for i in range(starting_layer, original_total_layers):
+    for i in range(stopping_layer, original_total_layers):
         state_b.update(load_file(f"{layers_dir}/layer_{i}.safetensors", device=device))
         print(f"Loaded layer {i}")
 
