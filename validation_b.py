@@ -96,8 +96,7 @@ if __name__ == "__main__":
     split_monitor = ResourceMonitor()
     split_monitor.start()
     split_start = time.time()
-    response, all_layer_outputs, split_ttft = machine_b.run_machine_b(tokenizer, model, STOPPING_LAYER, conn)
-    print(f"Response: {response}")
+    split_response, all_layer_outputs, split_ttft = machine_b.run_machine_b(tokenizer, model, STOPPING_LAYER, conn)
     split_time  = time.time() - split_start
     split_monitor.stop()
     split_stats = split_monitor.summary()
@@ -109,12 +108,24 @@ if __name__ == "__main__":
     full_start  = time.time()
     full_result = generation.default_generation(MODEL_PATH, PROMPT, STOPPING_LAYER, TOKENS_TO_GENERATE)
     full_ttft = full_result["ttft"]
+    full_response = full_result["response"]
     full_time   = time.time() - full_start
     full_monitor.stop()
     full_stats  = full_monitor.summary()
 
     # ---- Validate ----
     validate_all_layers(full_result["layer_outputs"], all_layer_outputs)
+
+    # ---- Response Comparison ----
+    
+    print(f"\n{'='*55}")
+    print("RESOURCE COMPARISON")
+    print(f"{'='*55}")
+    print(f"Split Response: {split_response}")
+    print(f"{'-'*55}")
+    print(f"Full Response:{full_response}")
+    print(f"{'-'*55}")
+    print(f"{'='*55}")
 
     # ---- Resource comparison ----
     print(f"\n{'='*55}")

@@ -144,7 +144,12 @@ def default_generation(model_path, prompt, stopping_layer, tokens_to_generate):
         )
     gen_time = time.time() - gen_start
 
-    output_response = tokenizer.decode(output_ids[0], skip_special_tokens=True)
+    input_len = inputs["input_ids"].shape[1]
+
+    output_response = tokenizer.decode(
+        output_ids[0][input_len:],
+        skip_special_tokens=True
+    )
 
     print(f"Generation time:     {gen_time:.2f}s")
     print(f"Time to first token: {ttft:.3f}s")
