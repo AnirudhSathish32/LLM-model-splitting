@@ -2,6 +2,11 @@ import torch
 import os
 
 # ================================================================
+# EVERYTHING BUT DEVICE, HANDOFF_DIR AND RECEIVED_DIR MUST BE SAME
+# ACROSS MACHINE_A AND MACHINE_B
+# ================================================================
+
+# ================================================================
 # MODEL CONFIG
 # ================================================================
 MODEL_PATH     = "./llama-8b"
@@ -15,7 +20,7 @@ TOKENS_TO_GENERATE = 50
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # ================================================================
-# NETWORK CONFIG
+# NETWORK CONFIG 
 # ================================================================
 MACHINE_A_TAILSCALE_IP = "100.74.100.92" 
 TAILSCALE_PORT         = 65432
