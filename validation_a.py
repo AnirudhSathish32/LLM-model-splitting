@@ -94,7 +94,7 @@ if __name__ == "__main__":
     split_monitor = ResourceMonitor()
     split_monitor.start()
     split_start = time.time()
-    response, all_layer_outputs = machine_a.run_machine_a(tokens_to_generate, stopping_layer, tokenizer, conn)
+    response, all_layer_outputs = machine_a.run_machine_a(tokens_to_generate, stopping_layer, tokenizer, inputs, conn)
     split_time  = time.time() - split_start
     split_monitor.stop()
     split_stats = split_monitor.summary()

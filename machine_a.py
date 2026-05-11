@@ -243,7 +243,7 @@ def split_1(current_input_ids, cache_a=None):
 
     return hidden, position_embeddings, position_ids, cache_a
 
-def run_machine_a(tokens_to_generate, stopping_layer, tokenizer, conn):
+def run_machine_a(tokens_to_generate, stopping_layer, tokenizer, inputs, conn):
     generated_token_ids = []
     current_input_ids = inputs["input_ids"]
     cache_a = None
@@ -369,7 +369,7 @@ if __name__ == "__main__":
     server_socket, conn = setup_machine_a_conn()
     model, inputs, tokenizer = setup_model_a(stopping_layer, model_path, prompt)
     try:
-        response, all_layer_outputs = run_machine_a(tokens_to_generate, stopping_layer, tokenizer, conn)
+        response, all_layer_outputs = run_machine_a(tokens_to_generate, stopping_layer, tokenizer, inputs, conn)
         print("Response:", response)
     finally:
         conn.close()
