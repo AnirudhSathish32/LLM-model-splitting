@@ -329,8 +329,8 @@ def run_machine_b(tokenizer, model, conn):
     print("Sending Machine B layer outputs to Machine A...")
     send_layers(conn, layer_outputs_b)
 
-
-    all_layer_outputs = {**layer_outputs_b, **machine_a_layer_outputs}
+    all_layer_outputs = {**machine_a_layer_outputs, **layer_outputs_b}
+    print(len(all_layer_outputs))
     response = tokenizer.decode(generated_token_ids, skip_special_tokens=True)
     get_system_stats("==================== SPLIT GEN STATS ============================")
     return response, all_layer_outputs

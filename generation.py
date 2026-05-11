@@ -103,8 +103,14 @@ def capture_layers(model, inputs, label, stopping_layer):
     return layer_outputs, handoff_package, ttft, layer_times
 
 
-def default_generation(model_path, prompt, stopping_layer):
-    model     = AutoModelForCausalLM.from_pretrained(model_path, output_hidden_states=True)
+def default_generation(model_path, prompt, stopping_layer, tokens_to_generate):
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model = AutoModelForCausalLM.from_pretrained(
+        model_path, 
+        output_hidden_states=True,
+        device_map=device
+        )
+    
     tokenizer = AutoTokenizer.from_pretrained(model_path)
     
     messages = [{"role": "user", "content": prompt}]
@@ -114,7 +120,7 @@ def default_generation(model_path, prompt, stopping_layer):
         add_generation_prompt=True
     )
     
-    inputs    = tokenizer(prompt, return_tensors="pt")
+    inputs = tokenizer(prompt, return_tensors="pt")
     model.eval()
 
     # Capture everything in one call
@@ -126,13 +132,12 @@ def default_generation(model_path, prompt, stopping_layer):
     with torch.no_grad():
         output_ids = model.generate(
             **inputs,
-            max_new_tokens=20,
-            do_sample=True,
+            max_new_tokens=tokens_to_generate,
             use_cache=True
         )
     gen_time = time.time() - gen_start
 
-    output_response = tokenizer.decode(output_ids[0], skip_special_tokens=False)
+    output_response = tokenizer.decode(output_ids[0], skip_special_tokens=True)
 
     print(f"Generation time:     {gen_time:.2f}s")
     print(f"Time to first token: {ttft:.3f}s")

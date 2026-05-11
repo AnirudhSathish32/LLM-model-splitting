@@ -106,7 +106,7 @@ if __name__ == "__main__":
     full_monitor = ResourceMonitor()
     full_monitor.start()
     full_start  = time.time()
-    full_result = generation.default_generation(model_path, prompt, stopping_layer)
+    full_result = generation.default_generation(model_path, prompt, stopping_layer, tokens_to_generate)
     full_time   = time.time() - full_start
     full_monitor.stop()
     full_stats  = full_monitor.summary()
