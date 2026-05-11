@@ -212,7 +212,7 @@ def load_handoff_package(save_dir="./received", first_pass=True):
 # SPLIT EXECUTION (MACHINE B)
 # ============================================================
 
-def split_2(hidden, position_embeddings, position_ids, cache_b=None):
+def split_2(hidden, position_embeddings, position_ids, model, cache_b=None):
     """
     ---- Machine B ----
     Second Split 
@@ -245,7 +245,7 @@ def split_2(hidden, position_embeddings, position_ids, cache_b=None):
     return  next_token_id, cache_b
 
 
-def run_machine_b(tokenizer, conn):
+def run_machine_b(tokenizer, model, conn):
     generated_token_ids = []
     cache_b = None
     position_embeddings = None
@@ -290,7 +290,7 @@ def run_machine_b(tokenizer, conn):
 
 
         print("Starting Split 2")
-        next_token_id, cache_b = split_2(hidden, position_embeddings, position_ids, cache_b)
+        next_token_id, cache_b = split_2(hidden, position_embeddings, position_ids, model, cache_b)
         #perform split 2 and generate the next token
 
         # ---- Check if model is done ----
@@ -333,7 +333,7 @@ if __name__ == "__main__":
     conn = setup_machine_b_conn()
     model, tokenizer = setup_model_b(stopping_layer, model_path)
     try:
-        response, all_layer_outputs = run_machine_b(tokenizer, conn)
+        response, all_layer_outputs = run_machine_b(tokenizer, model, conn)
         print("response:", response)
     finally:
         conn.close()
