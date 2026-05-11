@@ -11,6 +11,7 @@ import os
 import socket 
 import psutil
 import io 
+import struct
 from config import (
     MODEL_PATH,
     STOPPING_LAYER,
@@ -23,6 +24,7 @@ from config import (
     MSG_TOKEN,
     MSG_EOS,
     MSG_LAYER,
+    MSG_TTFT,
     HANDOFF_DIR
 )
 
@@ -79,6 +81,22 @@ def setup_model_a(stopping_layer:int, model_path, prompt):
 # ============================================================
 # MESSAGE PROTOCOL / SOCKET COMMUNICATION
 # ============================================================
+
+def send_ttft(conn, ttft):
+    """
+    Send Time-To-First-Token as an 8-byte float
+    """
+
+    payload = struct.pack(">d", ttft)
+    # >d:
+    # > = big endian
+    # d = double precision float (8 bytes)
+
+    conn.sendall(bytes([MSG_TTFT]))
+    conn.sendall(len(payload).to_bytes(8, byteorder="big"))
+    conn.sendall(payload)
+
+    print(f"Sent TTFT: {ttft:.4f}s")
 
 def send_layers(conn, layers):
     buffer = io.BytesIO()
@@ -355,13 +373,16 @@ def run_machine_a(tokens_to_generate, stopping_layer, tokenizer, inputs, model, 
     send_layers(conn, layer_outputs)
     print("Receiving Machine B layer outputs...")
     machine_b_layer_outputs = receive_layers(conn)
+    print("Sending ttft to Machine B")
+    ttft = ttft_result["ttft"]
+    send_ttft(ttft)
 
     h1.remove()
     h2.remove()
     all_layer_outputs = {**layer_outputs, **machine_b_layer_outputs}
     response = tokenizer.decode(generated_token_ids, skip_special_tokens=True)
 
-    return response, all_layer_outputs
+    return response, all_layer_outputs, ttft
 
 
 # ============================================================
@@ -372,7 +393,7 @@ if __name__ == "__main__":
     server_socket, conn = setup_machine_a_conn()
     model, inputs, tokenizer = setup_model_a(STOPPING_LAYER, MODEL_PATH, PROMPT)
     try:
-        response, all_layer_outputs = run_machine_a(TOKENS_TO_GENERATE, STOPPING_LAYER, tokenizer, inputs, model, conn)
+        response, all_layer_outputs, ttft = run_machine_a(TOKENS_TO_GENERATE, STOPPING_LAYER, tokenizer, inputs, model, conn)
         print("Response:", response)
     finally:
         conn.close()

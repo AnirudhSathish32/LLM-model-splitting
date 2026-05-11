@@ -29,6 +29,7 @@ MSG_NEXT_PASS  = 2
 MSG_TOKEN      = 3
 MSG_EOS        = 4
 MSG_LAYER      = 5
+MSG_TTFT       = 6
 
 # ================================================================
 # PATHS

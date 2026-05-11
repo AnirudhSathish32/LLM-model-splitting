@@ -8,6 +8,7 @@ import os
 import socket 
 import psutil
 import io 
+import struct
 from config import (
     MODEL_PATH,
     STOPPING_LAYER,
@@ -19,6 +20,7 @@ from config import (
     MSG_TOKEN,
     MSG_EOS,
     MSG_LAYER,
+    MSG_TTFT,
     RECEIVED_DIR
 )
 
@@ -70,15 +72,25 @@ def setup_model_b(stopping_layer:int, model_path):
 # MESSAGE PROTOCOL / SOCKET COMMUNICATION
 # ============================================================
 
-MACHINE_A_TAILSCALE_IP = "100.74.100.92"  
-TAILSCALE_PORT = 65432
+def receive_ttft(conn):
+    """
+    Receive TTFT from Machine A
+    """
 
-MSG_FIRST_PASS = 1
-MSG_NEXT_PASS = 2
-MSG_TOKEN = 3
-MSG_EOS = 4
-MSG_LAYER = 5
+    msg_type = read_TCP_data(conn, 1)[0]
 
+    if msg_type != MSG_TTFT:
+        raise ValueError(f"Expected MSG_TTFT, got {msg_type}")
+
+    length = int.from_bytes(read_TCP_data(conn, 8), "big")
+
+    payload = read_TCP_data(conn, length)
+
+    ttft = struct.unpack(">d", payload)[0]
+
+    print(f"Received TTFT from Machine A: {ttft:.4f}s")
+
+    return ttft
 
 def send_layers(conn, layers):
     buffer = io.BytesIO()
@@ -350,9 +362,11 @@ def run_machine_b(tokenizer, model, stopping_layer, conn):
 
     all_layer_outputs = {**machine_a_layer_outputs, **layer_outputs_b}
     print(len(all_layer_outputs))
+
+    ttft = receive_ttft(conn)
     response = tokenizer.decode(generated_token_ids, skip_special_tokens=True)
     get_system_stats("==================== SPLIT GEN STATS ============================")
-    return response, all_layer_outputs
+    return response, all_layer_outputs, ttft
 
 # ============================================================
 # MAIN ENTRYPOINT
@@ -362,7 +376,7 @@ if __name__ == "__main__":
     conn = setup_machine_b_conn()
     model, tokenizer = setup_model_b(STOPPING_LAYER, MODEL_PATH)
     try:
-        response, all_layer_outputs = run_machine_b(tokenizer, model, STOPPING_LAYER, conn)
+        response, all_layer_outputs, ttft = run_machine_b(tokenizer, model, STOPPING_LAYER, conn)
         print("response:", response)
     finally:
         conn.close()

@@ -95,7 +95,7 @@ if __name__ == "__main__":
     split_monitor = ResourceMonitor()
     split_monitor.start()
     split_start = time.time()
-    response, all_layer_outputs = machine_a.run_machine_a(TOKENS_TO_GENERATE, STOPPING_LAYER, tokenizer, inputs, model, conn)
+    response, all_layer_outputs, split_ttft = machine_a.run_machine_a(TOKENS_TO_GENERATE, STOPPING_LAYER, tokenizer, inputs, model, conn)
     print(f"Response: {response}")
     split_time  = time.time() - split_start
     split_monitor.stop()
@@ -107,6 +107,7 @@ if __name__ == "__main__":
     full_monitor.start()
     full_start  = time.time()
     full_result = generation.default_generation(MODEL_PATH, PROMPT, STOPPING_LAYER, TOKENS_TO_GENERATE)
+    full_ttft = full_result["ttft"]
     full_time   = time.time() - full_start
     full_monitor.stop()
     full_stats  = full_monitor.summary()
@@ -121,6 +122,7 @@ if __name__ == "__main__":
     print(f"{'Metric':<25} {'Full':<15} {'Split':<15}")
     print(f"{'-'*55}")
     print(f"{'Time (s)':<25} {full_time:<15.2f} {split_time:<15.2f}")
+    print(f"{'Time (s)':<25} {full_ttft:<15.2f} {split_ttft:<15.2f}")
     print(f"{'CPU peak (%)':<25} {full_stats['cpu_peak']:<15.1f} {split_stats['cpu_peak']:<15.1f}")
     print(f"{'RAM peak (GB)':<25} {full_stats['ram_peak_gb']:<15.2f} {split_stats['ram_peak_gb']:<15.2f}")
     print(f"{'GPU peak (GB)':<25} {full_stats['gpu_peak_gb']:<15.2f} {split_stats['gpu_peak_gb']:<15.2f}")
