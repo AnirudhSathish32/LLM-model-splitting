@@ -122,7 +122,7 @@ if __name__ == "__main__":
     print(f"{'Metric':<25} {'Full':<15} {'Split':<15}")
     print(f"{'-'*55}")
     print(f"{'Time (s)':<25} {full_time:<15.2f} {split_time:<15.2f}")
-    print(f"{'Time (s)':<25} {full_ttft:<15.2f} {split_ttft:<15.2f}")
+    print(f"{'Time to First Token (s)':<25} {full_ttft:<15.2f} {split_ttft:<15.2f}")
     print(f"{'CPU peak (%)':<25} {full_stats['cpu_peak']:<15.1f} {split_stats['cpu_peak']:<15.1f}")
     print(f"{'RAM peak (GB)':<25} {full_stats['ram_peak_gb']:<15.2f} {split_stats['ram_peak_gb']:<15.2f}")
     print(f"{'GPU peak (GB)':<25} {full_stats['gpu_peak_gb']:<15.2f} {split_stats['gpu_peak_gb']:<15.2f}")
