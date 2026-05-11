@@ -306,7 +306,7 @@ def run_machine_a(tokens_to_generate, stopping_layer, tokenizer, inputs, model, 
             send_msg_file(conn, MSG_FIRST_PASS,"./handoff/sin.pt")
             send_msg_file(conn, MSG_FIRST_PASS,"./handoff/position_ids.pt")
             send_msg_file(conn, MSG_FIRST_PASS,"./handoff/cos.pt")
-
+            print(hidden.dtype)
             first_pass = False
 
             #export captured["position_ids"], captured["position_embeddings"] and captured["hidden"]
