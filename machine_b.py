@@ -258,7 +258,7 @@ def run_machine_b(tokenizer, model, stopping_layer, conn):
     layer_times_b   = {}
 
     def make_validation_hook(idx):
-        original_idx = idx + stopping_layer 
+        original_idx = idx + stopping_layer + 1
         def hook_fn_validation(module, input, output):
             t = time.time()
             hidden = output[0].detach().clone()

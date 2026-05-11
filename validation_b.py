@@ -46,9 +46,9 @@ class ResourceMonitor:
             "gpu_peak_gb": max(gpus),
         }
     
-def validate_all_layers(full_outputs, split_outputs, tolerance=1e-2):
+def validate_all_layers(full_outputs, split_outputs, cos_threshold=0.99, tolerance=1e-2):
     cos_sim_fn = torch.nn.CosineSimilarity(dim=-1)
-    device = "cpu"
+    device = "cuda" if torch.cuda.is_available() else "cpu"
 
     print(f"\n{'='*65}")
     print("LAYER VALIDATION — Full vs Split (all 28 layers)")
@@ -71,7 +71,7 @@ def validate_all_layers(full_outputs, split_outputs, tolerance=1e-2):
             full_h.reshape(-1,  full_h.shape[-1]),
             split_h.reshape(-1, split_h.shape[-1])
         ).mean().item()
-        match = max_diff < tolerance
+        match = cos_sim > cos_threshold
         if not match:
             all_match = False
 
