@@ -245,7 +245,7 @@ def split_2(hidden, position_embeddings, position_ids, model, cache_b=None):
     return  next_token_id, cache_b
 
 
-def run_machine_b(tokenizer, model, stopping_layer, conn):
+def run_machine_b(tokenizer, model, conn):
     generated_token_ids = []
     cache_b = None
     position_embeddings = None
