@@ -257,16 +257,23 @@ def run_machine_b(tokenizer, model, conn):
     layer_outputs_b = {}
     layer_times_b   = {}
 
-    def make_validation_hook_b(local_idx, original_idx):
+    def make_validation_hook(idx):
         def hook_fn_validation(module, input, output):
-            t      = time.time()
+            t = time.time()
+
             hidden = output[0].detach().clone()
             if hidden.dim() == 2:
                 hidden = hidden.unsqueeze(0)
-            # Store at original index so Machine A can compare correctly
-            layer_outputs_b[original_idx] = hidden
-            layer_times_b[original_idx]   = time.time() - t
+            layer_outputs_b[idx] = hidden
+            layer_times_b[idx]   = time.time() - t
         return hook_fn_validation
+
+    # Register validation hooks on all layers
+    validation_hooks = []
+    for i in range(len(model.model.layers)):
+        validation_hooks.append(
+            model.model.layers[i].register_forward_hook(make_validation_hook(i))
+        )
     
     while True:
         if first_pass:
