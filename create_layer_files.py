@@ -3,7 +3,7 @@ from transformers import AutoModelForCausalLM
 import torch
 import os
 
-model_path = "./llama-3b"
+model_path = "./llama-8b"
 output_dir = "./layers"
 
 model_name = os.path.basename(model_path)
@@ -15,7 +15,7 @@ model = AutoModelForCausalLM.from_pretrained(model_path, torch_dtype=torch.bfloa
 full_state = model.state_dict()
 
 # Save each layer separately
-for layer_idx in range(28):
+for layer_idx in range(len(model.model.layers)):
     layer_weights = {}
     prefix = f"model.layers.{layer_idx}."
     for name, tensor in full_state.items():
