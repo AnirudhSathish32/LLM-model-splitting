@@ -1,0 +1,33 @@
+import torch
+import os
+
+# ================================================================
+# MODEL CONFIG
+# ================================================================
+MODEL_PATH     = "./llama-8b"
+STOPPING_LAYER = 16
+
+# ================================================================
+# GENERATION CONFIG
+# ================================================================
+PROMPT             = "Explain how neural networks work"
+TOKENS_TO_GENERATE = 50
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+# ================================================================
+# NETWORK CONFIG
+# ================================================================
+MACHINE_A_TAILSCALE_IP = "100.74.100.92" 
+TAILSCALE_PORT         = 65432
+MSG_FIRST_PASS = 1
+MSG_NEXT_PASS  = 2
+MSG_TOKEN      = 3
+MSG_EOS        = 4
+MSG_LAYER      = 5
+
+# ================================================================
+# PATHS
+# ================================================================
+HANDOFF_DIR  = "./handoff"
+RECEIVED_DIR = "./received"
+LAYERS_DIR   = f"./layers/{os.path.basename(MODEL_PATH)}"

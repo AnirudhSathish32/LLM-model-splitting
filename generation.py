@@ -4,6 +4,12 @@ import torch
 import psutil
 import threading
 import os
+from config import (
+    MODEL_PATH,
+    PROMPT,
+    STOPPING_LAYER,
+    TOKENS_TO_GENERATE
+)
 
 def capture_layers(model, inputs, label, stopping_layer):
     """
@@ -154,9 +160,5 @@ def default_generation(model_path, prompt, stopping_layer, tokens_to_generate):
     }
 
 if __name__ == "__main__":
-    model_path = "./llama-3b"
-    prompt = "Hello World"
-    stopping_layer = 27
-
-    default_generation(model_path, prompt, stopping_layer)
+    default_generation(MODEL_PATH, PROMPT, STOPPING_LAYER, TOKENS_TO_GENERATE)
     

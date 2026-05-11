@@ -8,6 +8,19 @@ import os
 import socket 
 import psutil
 import io 
+from config import (
+    MODEL_PATH,
+    STOPPING_LAYER,
+    DEVICE,
+    MACHINE_A_TAILSCALE_IP,
+    TAILSCALE_PORT,
+    MSG_FIRST_PASS,
+    MSG_NEXT_PASS,
+    MSG_TOKEN,
+    MSG_EOS,
+    MSG_LAYER,
+    RECEIVED_DIR
+)
 
 
 def setup_model_b(stopping_layer:int, model_path):
@@ -15,7 +28,6 @@ def setup_model_b(stopping_layer:int, model_path):
 
     model_path = model_path
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
     tokenizer = AutoTokenizer.from_pretrained(model_path)
     config = AutoConfig.from_pretrained(model_path)
     original_total_layers = config.num_hidden_layers 
@@ -28,11 +40,11 @@ def setup_model_b(stopping_layer:int, model_path):
     state_b = {}
 
     for i in range(stopping_layer, original_total_layers):
-        state_b.update(load_file(f"{layers_dir}/layer_{i}.safetensors", device=device))
+        state_b.update(load_file(f"{layers_dir}/layer_{i}.safetensors", device=DEVICE))
         print(f"Loaded layer {i}")
 
-    state_b.update(load_file(f"{layers_dir}/norm.safetensors", device=device))
-    state_b.update(load_file(f"{layers_dir}/head.safetensors", device=device))
+    state_b.update(load_file(f"{layers_dir}/norm.safetensors", device=DEVICE))
+    state_b.update(load_file(f"{layers_dir}/head.safetensors", device=DEVICE))
 
     model.load_state_dict(
         state_b,
@@ -45,7 +57,7 @@ def setup_model_b(stopping_layer:int, model_path):
     model.model.layers = nn.ModuleList(kept_layers)
     
     for i, layer in enumerate(model.model.layers):
-        print(i, layer.input_layernorm.weight.device)
+        print(i, layer.input_layernorm.weight.DEVICE)
 
     model.eval()
 
@@ -84,7 +96,7 @@ def receive_layers(conn):
         raise ValueError(
             f"Expected MSG_LAYER, got {msg_type}"
         )
-    return torch.load(io.BytesIO(payload), map_location=device)
+    return torch.load(io.BytesIO(payload), map_location=DEVICE)
 
 def send_token(conn, token):
     buffer = io.BytesIO()
@@ -198,17 +210,16 @@ def get_system_stats(label):
     else:
         print("GPU: not available")
 
-def load_handoff_package(save_dir="./received", first_pass=True):
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+def load_handoff_package(save_dir=RECEIVED_DIR, first_pass=True):
     if first_pass:
-        hidden = torch.load(f"{save_dir}/hidden.pt", map_location=device)
-        cos = torch.load(f"{save_dir}/cos.pt", map_location=device)
-        sin = torch.load(f"{save_dir}/sin.pt", map_location=device)
+        hidden = torch.load(f"{save_dir}/hidden.pt", map_location=DEVICE)
+        cos = torch.load(f"{save_dir}/cos.pt", map_location=DEVICE)
+        sin = torch.load(f"{save_dir}/sin.pt", map_location=DEVICE)
         position_embeddings = (cos, sin)
-        position_ids = torch.load(f"{save_dir}/position_ids.pt", map_location=device)
+        position_ids = torch.load(f"{save_dir}/position_ids.pt", map_location=DEVICE)
         return hidden, position_embeddings, position_ids
     else:
-        hidden = torch.load(f"{save_dir}/hidden.pt", map_location=device)
+        hidden = torch.load(f"{save_dir}/hidden.pt", map_location=DEVICE)
         return hidden
 
 # ============================================================
@@ -286,21 +297,21 @@ def run_machine_b(tokenizer, model, stopping_layer, conn):
                 #print(f"Layer {idx} shape after first pass removal: {tensor.shape}")
             
             print("Machine B first pass")
-            os.makedirs("./received", exist_ok=True)
-            receive_msg_file(conn, MSG_FIRST_PASS,"./received/hidden.pt")
-            receive_msg_file(conn, MSG_FIRST_PASS,"./received/sin.pt")
-            receive_msg_file(conn, MSG_FIRST_PASS,"./received/position_ids.pt")
-            receive_msg_file(conn, MSG_FIRST_PASS,"./received/cos.pt")
+            os.makedirs(RECEIVED_DIR, exist_ok=True)
+            receive_msg_file(conn, MSG_FIRST_PASS, f"{RECEIVED_DIR}/hidden.pt")
+            receive_msg_file(conn, MSG_FIRST_PASS, f"{RECEIVED_DIR}/sin.pt")
+            receive_msg_file(conn, MSG_FIRST_PASS, f"{RECEIVED_DIR}/position_ids.pt")
+            receive_msg_file(conn, MSG_FIRST_PASS, f"{RECEIVED_DIR}/cos.pt")
 
             hidden, position_embeddings, position_ids = load_handoff_package(first_pass=first_pass)
             first_pass = False
             #load file into memory
 
         else:
-            receive_msg_file(conn, MSG_NEXT_PASS,"./received/hidden.pt")
-            receive_msg_file(conn, MSG_NEXT_PASS,"./received/sin.pt")
-            receive_msg_file(conn, MSG_NEXT_PASS,"./received/position_ids.pt")
-            receive_msg_file(conn, MSG_NEXT_PASS,"./received/cos.pt")
+            receive_msg_file(conn, MSG_NEXT_PASS, f"{RECEIVED_DIR}/hidden.pt")
+            receive_msg_file(conn, MSG_NEXT_PASS, f"{RECEIVED_DIR}/sin.pt")
+            receive_msg_file(conn, MSG_NEXT_PASS, f"{RECEIVED_DIR}/position_ids.pt")
+            receive_msg_file(conn, MSG_NEXT_PASS, f"{RECEIVED_DIR}/cos.pt")
             hidden, position_embeddings, position_ids = load_handoff_package()
 
 
@@ -348,14 +359,10 @@ def run_machine_b(tokenizer, model, stopping_layer, conn):
 # ============================================================
 
 if __name__ == "__main__":
-
-    stopping_layer = 14
-    model_path = "./llama-3b"
-
     conn = setup_machine_b_conn()
-    model, tokenizer = setup_model_b(stopping_layer, model_path)
+    model, tokenizer = setup_model_b(STOPPING_LAYER, MODEL_PATH)
     try:
-        response, all_layer_outputs = run_machine_b(tokenizer, model, stopping_layer, conn)
+        response, all_layer_outputs = run_machine_b(tokenizer, model, STOPPING_LAYER, conn)
         print("response:", response)
     finally:
         conn.close()

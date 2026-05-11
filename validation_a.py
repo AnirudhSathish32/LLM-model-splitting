@@ -8,6 +8,13 @@ import torch.nn.functional as F
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import machine_a
 import generation
+from config import (
+    MODEL_PATH,
+    STOPPING_LAYER,
+    PROMPT,
+    TOKENS_TO_GENERATE,
+    DEVICE
+)
     
 
 class ResourceMonitor:
@@ -48,7 +55,6 @@ class ResourceMonitor:
     
 def validate_all_layers(full_outputs, split_outputs, cos_threshold=0.99, tolerance=1e-2):
     cos_sim_fn = torch.nn.CosineSimilarity(dim=-1)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
 
     print(f"\n{'='*65}")
     print("LAYER VALIDATION — Full vs Split (all 28 layers)")
@@ -62,8 +68,8 @@ def validate_all_layers(full_outputs, split_outputs, cos_threshold=0.99, toleran
             print(f"{idx:<8} NOT CAPTURED")
             continue
 
-        full_h  = full_outputs[idx].float().to(device)
-        split_h = split_outputs[idx].float().to(device)
+        full_h  = full_outputs[idx].float().to(DEVICE)
+        split_h = split_outputs[idx].float().to(DEVICE)
 
         max_diff  = (full_h - split_h).abs().max().item()
         mean_diff = (full_h - split_h).abs().mean().item()
@@ -82,31 +88,25 @@ def validate_all_layers(full_outputs, split_outputs, cos_threshold=0.99, toleran
     return all_match
 
 if __name__ == "__main__":
-    model_path = "./llama-3b"
-    stopping_layer = 14
-    starting_layer = stopping_layer + 1
-    prompt = "Hello world"
-    tokens_to_generate = 50 
-
     # ---- Split generation ----
-    print("\n[2] Running split generation...")
+    print("\n[1] Running split generation...")
     server_socket, conn = machine_a.setup_machine_a_conn()
-    model, inputs, tokenizer = machine_a.setup_model_a(stopping_layer, model_path, prompt)
+    model, inputs, tokenizer = machine_a.setup_model_a(STOPPING_LAYER, MODEL_PATH, PROMPT)
     split_monitor = ResourceMonitor()
     split_monitor.start()
     split_start = time.time()
-    response, all_layer_outputs = machine_a.run_machine_a(tokens_to_generate, stopping_layer, tokenizer, inputs, model, conn)
+    response, all_layer_outputs = machine_a.run_machine_a(TOKENS_TO_GENERATE, STOPPING_LAYER, tokenizer, inputs, model, conn)
     print(f"Response: {response}")
     split_time  = time.time() - split_start
     split_monitor.stop()
     split_stats = split_monitor.summary()
 
     # ---- Full generation ----
-    print("\n[1] Running full generation...")
+    print("\n[2] Running full generation...")
     full_monitor = ResourceMonitor()
     full_monitor.start()
     full_start  = time.time()
-    full_result = generation.default_generation(model_path, prompt, stopping_layer, tokens_to_generate)
+    full_result = generation.default_generation(MODEL_PATH, PROMPT, STOPPING_LAYER, TOKENS_TO_GENERATE)
     full_time   = time.time() - full_start
     full_monitor.stop()
     full_stats  = full_monitor.summary()

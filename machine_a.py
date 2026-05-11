@@ -11,6 +11,20 @@ import os
 import socket 
 import psutil
 import io 
+from config import (
+    MODEL_PATH,
+    STOPPING_LAYER,
+    PROMPT,
+    TOKENS_TO_GENERATE,
+    DEVICE,
+    TAILSCALE_PORT,
+    MSG_FIRST_PASS,
+    MSG_NEXT_PASS,
+    MSG_TOKEN,
+    MSG_EOS,
+    MSG_LAYER,
+    HANDOFF_DIR
+)
 
 # ============================================================
 # MODEL LOADING / INITIALIZATION
@@ -22,7 +36,6 @@ def setup_model_a(stopping_layer:int, model_path, prompt):
     start = time.time()
     model_path = model_path
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
     tokenizer = AutoTokenizer.from_pretrained(model_path)
     config = AutoConfig.from_pretrained(model_path)
 
@@ -35,9 +48,9 @@ def setup_model_a(stopping_layer:int, model_path, prompt):
     layers_dir = f"./layers/{model_name}"
     state_a = {}
 
-    state_a.update(load_file(f"{layers_dir}/embed_tokens.safetensors", device=device))
+    state_a.update(load_file(f"{layers_dir}/embed_tokens.safetensors", device=DEVICE))
     for i in range(stopping_layer):
-        state_a.update(load_file(f"{layers_dir}/layer_{i}.safetensors", device=device))
+        state_a.update(load_file(f"{layers_dir}/layer_{i}.safetensors", device=DEVICE))
         print(f"Loaded layer {i}")
 
     model.load_state_dict(
@@ -56,7 +69,7 @@ def setup_model_a(stopping_layer:int, model_path, prompt):
         add_generation_prompt=True
     )
 
-    inputs = tokenizer(prompt, return_tensors="pt").to(device)
+    inputs = tokenizer(prompt, return_tensors="pt").to(DEVICE)
 
     print(f"Load time: {time.time() - start:.2f}s")
     print("Machine A ready")
@@ -66,14 +79,6 @@ def setup_model_a(stopping_layer:int, model_path, prompt):
 # ============================================================
 # MESSAGE PROTOCOL / SOCKET COMMUNICATION
 # ============================================================
-
-TAILSCALE_PORT = 65432
-
-MSG_FIRST_PASS = 1
-MSG_NEXT_PASS = 2
-MSG_TOKEN = 3
-MSG_EOS = 4
-MSG_LAYER = 5
 
 def send_layers(conn, layers):
     buffer = io.BytesIO()
@@ -86,12 +91,11 @@ def send_layers(conn, layers):
 
 def receive_layers(conn):
     msg_type, payload = read_message(conn)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
     if msg_type != MSG_LAYER:
         raise ValueError(
             f"Expected MSG_LAYER, got {msg_type}"
         )
-    return torch.load(io.BytesIO(payload), map_location=device)
+    return torch.load(io.BytesIO(payload), map_location=DEVICE)
 
 #def handle_message(msg_type, payload):
     #"""
@@ -208,14 +212,14 @@ def hook_pos(module, args, kwargs):
     captured["position_ids"] = kwargs.get("position_ids")
     captured["cache_a"] = kwargs.get("past_key_value")
 
-def save_handoff_package(hidden, position_embeddings, position_ids, save_dir="./handoff"):
+def save_handoff_package(hidden, position_embeddings, position_ids, save_dir=HANDOFF_DIR):
     os.makedirs(save_dir, exist_ok=True)
     torch.save(hidden, f"{save_dir}/hidden.pt")
     torch.save(position_embeddings[0], f"{save_dir}/cos.pt")
     torch.save(position_embeddings[1], f"{save_dir}/sin.pt")
     torch.save(position_ids, f"{save_dir}/position_ids.pt")
 
-def save_hidden_only(hidden, save_dir="./handoff"):
+def save_hidden_only(hidden, save_dir=HANDOFF_DIR):
     torch.save(hidden, f"{save_dir}/hidden.pt")
 
 # ============================================================
@@ -302,10 +306,10 @@ def run_machine_a(tokens_to_generate, stopping_layer, tokenizer, inputs, model, 
 
             save_handoff_package(hidden, position_embeddings, position_ids)
 
-            send_msg_file(conn, MSG_FIRST_PASS,"./handoff/hidden.pt")
-            send_msg_file(conn, MSG_FIRST_PASS,"./handoff/sin.pt")
-            send_msg_file(conn, MSG_FIRST_PASS,"./handoff/position_ids.pt")
-            send_msg_file(conn, MSG_FIRST_PASS,"./handoff/cos.pt")
+            send_msg_file(conn, MSG_FIRST_PASS, f"{HANDOFF_DIR}/hidden.pt")
+            send_msg_file(conn, MSG_FIRST_PASS, f"{HANDOFF_DIR}/sin.pt")
+            send_msg_file(conn, MSG_FIRST_PASS, f"{HANDOFF_DIR}/position_ids.pt")
+            send_msg_file(conn, MSG_FIRST_PASS, f"{HANDOFF_DIR}/cos.pt")
             print(hidden.dtype)
             first_pass = False
 
@@ -313,10 +317,10 @@ def run_machine_a(tokens_to_generate, stopping_layer, tokenizer, inputs, model, 
 
         else:
             save_handoff_package(hidden, position_embeddings, position_ids)
-            send_msg_file(conn, MSG_NEXT_PASS,"./handoff/hidden.pt")
-            send_msg_file(conn, MSG_NEXT_PASS,"./handoff/sin.pt")
-            send_msg_file(conn, MSG_NEXT_PASS,"./handoff/position_ids.pt")
-            send_msg_file(conn, MSG_NEXT_PASS,"./handoff/cos.pt")
+            send_msg_file(conn, MSG_NEXT_PASS, f"{HANDOFF_DIR}/hidden.pt")
+            send_msg_file(conn, MSG_NEXT_PASS, f"{HANDOFF_DIR}/sin.pt")
+            send_msg_file(conn, MSG_NEXT_PASS, f"{HANDOFF_DIR}/position_ids.pt")
+            send_msg_file(conn, MSG_NEXT_PASS, f"{HANDOFF_DIR}/cos.pt")
 
 
         # call machine_b
@@ -343,7 +347,7 @@ def run_machine_a(tokens_to_generate, stopping_layer, tokenizer, inputs, model, 
             print("receiving token")
             next_token_id = torch.load(io.BytesIO(payload))
             generated_token_ids.append(next_token_id.item())
-            current_input_ids = torch.cat([current_input_ids, next_token_id.unsqueeze(0).to(current_input_ids.device)], dim=-1)
+            current_input_ids = torch.cat([current_input_ids, next_token_id.unsqueeze(0).to(current_input_ids.DEVICE)], dim=-1)
             token_count += 1
             print(token_count)
 
@@ -365,15 +369,10 @@ def run_machine_a(tokens_to_generate, stopping_layer, tokenizer, inputs, model, 
 # ============================================================
 
 if __name__ == "__main__":
-    stopping_layer = 14
-    model_path = "./llama-3b"
-    prompt = "Hello World"
-    tokens_to_generate = 50
-
     server_socket, conn = setup_machine_a_conn()
-    model, inputs, tokenizer = setup_model_a(stopping_layer, model_path, prompt)
+    model, inputs, tokenizer = setup_model_a(STOPPING_LAYER, MODEL_PATH, PROMPT)
     try:
-        response, all_layer_outputs = run_machine_a(tokens_to_generate, stopping_layer, tokenizer, inputs, model, conn)
+        response, all_layer_outputs = run_machine_a(TOKENS_TO_GENERATE, STOPPING_LAYER, tokenizer, inputs, model, conn)
         print("Response:", response)
     finally:
         conn.close()
