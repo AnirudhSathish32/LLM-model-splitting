@@ -306,7 +306,7 @@ def run_machine_b(tokenizer, model, stopping_layer, conn):
 
         print("Starting Split 2")
         next_token_id, cache_b = split_2(hidden, position_embeddings, position_ids, model, cache_b)
-        
+        print(hidden.dtype, hidden.device)
         for h in validation_hooks:
                 h.remove()
         validation_hooks = []

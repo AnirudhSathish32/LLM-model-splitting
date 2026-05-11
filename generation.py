@@ -159,3 +159,4 @@ if __name__ == "__main__":
     stopping_layer = 27
 
     default_generation(model_path, prompt, stopping_layer)
+    
