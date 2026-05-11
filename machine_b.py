@@ -245,7 +245,7 @@ def split_2(hidden, position_embeddings, position_ids, model, cache_b=None):
     return  next_token_id, cache_b
 
 
-def run_machine_b(tokenizer, model, conn):
+def run_machine_b(tokenizer, model, stopping_layer, conn):
     generated_token_ids = []
     cache_b = None
     position_embeddings = None
@@ -260,7 +260,6 @@ def run_machine_b(tokenizer, model, conn):
     def make_validation_hook(idx):
         def hook_fn_validation(module, input, output):
             t = time.time()
-
             hidden = output[0].detach().clone()
             if hidden.dim() == 2:
                 hidden = hidden.unsqueeze(0)
@@ -277,9 +276,6 @@ def run_machine_b(tokenizer, model, conn):
     
     while True:
         if first_pass:
-            for h in validation_hooks:
-                h.remove()
-            validation_hooks = []
 
             #for idx, tensor in layer_outputs_b.items():
                 #print(f"Layer {idx} shape after first pass removal: {tensor.shape}")
@@ -305,6 +301,10 @@ def run_machine_b(tokenizer, model, conn):
 
         print("Starting Split 2")
         next_token_id, cache_b = split_2(hidden, position_embeddings, position_ids, model, cache_b)
+        
+        for h in validation_hooks:
+                h.remove()
+        validation_hooks = []
         #perform split 2 and generate the next token
 
         # ---- Check if model is done ----
