@@ -57,6 +57,7 @@ def validate_all_layers(full_outputs, split_outputs, cos_threshold=0.99, toleran
     print(f"{'-'*65}")
 
     all_match = True
+    
     for idx in sorted(full_outputs.keys()):
         if idx not in split_outputs:
             print(f"{idx:<8} NOT CAPTURED")
@@ -67,11 +68,16 @@ def validate_all_layers(full_outputs, split_outputs, cos_threshold=0.99, toleran
 
         max_diff  = (full_h - split_h).abs().max().item()
         mean_diff = (full_h - split_h).abs().mean().item()
+        rel_diff = max_diff / (full_h.abs().mean().item() + 1e-8)
+
         cos_sim   = cos_sim_fn(
             full_h.reshape(-1,  full_h.shape[-1]),
             split_h.reshape(-1, split_h.shape[-1])
         ).mean().item()
-        match = cos_sim > cos_threshold
+
+        cos_min = cos_sim.min().item()
+
+        match = (cos_min > cos_threshold) and (rel_diff < 0.1)
         if not match:
             all_match = False
 
