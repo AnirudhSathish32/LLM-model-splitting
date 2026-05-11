@@ -15,7 +15,7 @@ STOPPING_LAYER = 16
 # ================================================================
 # GENERATION CONFIG
 # ================================================================
-PROMPT             = "Explain how neural networks work"
+PROMPT             = "Hello World"
 TOKENS_TO_GENERATE = 50
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
