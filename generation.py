@@ -117,7 +117,6 @@ def default_generation(model_path, prompt, stopping_layer, tokens_to_generate):
         model_path, 
         device_map=DEVICE,
         dtype=DTYPE,
-        do_sample=False
         )
     
     tokenizer = AutoTokenizer.from_pretrained(model_path)
@@ -144,7 +143,8 @@ def default_generation(model_path, prompt, stopping_layer, tokens_to_generate):
         output_ids = model.generate(
             **inputs,
             max_new_tokens=tokens_to_generate,
-            use_cache=True
+            use_cache=True,
+            do_sample=False
         )
     gen_time = time.time() - gen_start
 
