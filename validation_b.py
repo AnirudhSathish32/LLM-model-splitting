@@ -70,12 +70,12 @@ def validate_all_layers(full_outputs, split_outputs, cos_threshold=0.99, toleran
         mean_diff = (full_h - split_h).abs().mean().item()
         rel_diff = max_diff / (full_h.abs().mean().item() + 1e-8)
 
-        cos_sim   = cos_sim_fn(
-            full_h.reshape(-1,  full_h.shape[-1]),
+        cos_vals = cos_sim_fn(
+            full_h.reshape(-1, full_h.shape[-1]),
             split_h.reshape(-1, split_h.shape[-1])
-        ).mean().item()
+        )
 
-        cos_min = cos_sim.min().item()
+        cos_min = cos_vals.min().item()
 
         match = (cos_min > cos_threshold) and (rel_diff < 0.1)
         if not match:
