@@ -222,7 +222,7 @@ def save_hidden_only(hidden, save_dir="./handoff"):
 # SPLIT EXECUTION (MACHINE A)
 # ============================================================
 
-def split_1(current_input_ids, cache_a=None):
+def split_1(current_input_ids, model, cache_a=None):
     """
     ---- Machine A ----
     First Split
@@ -286,8 +286,8 @@ def run_machine_a(tokens_to_generate, stopping_layer, tokenizer, inputs, model, 
 
     while token_count < tokens_to_generate:
         
-        print("performing split 1")
-        hidden, position_embeddings, position_ids, cache_a = split_1(current_input_ids, cache_a)
+        print("Starting Split 1")
+        hidden, position_embeddings, position_ids, cache_a = split_1(current_input_ids, model, cache_a)
         # perform split 1
         
         if first_pass:
