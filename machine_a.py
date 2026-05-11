@@ -281,6 +281,7 @@ def run_machine_a(tokens_to_generate, stopping_layer, tokenizer, inputs, model, 
         )
 
 
+
     h1 = model.model.layers[stopping_layer - 1].register_forward_hook(hook_fn)
     h2 = model.model.layers[stopping_layer - 1].register_forward_pre_hook(hook_pos, with_kwargs=True)
 
@@ -295,6 +296,9 @@ def run_machine_a(tokens_to_generate, stopping_layer, tokenizer, inputs, model, 
             for h in validation_hooks:
                 h.remove()
             validation_hooks = []
+
+            for idx, tensor in layer_outputs.items():
+                print(f"Layer {idx} shape after first pass removal: {tensor.shape}")
 
             save_handoff_package(hidden, position_embeddings, position_ids)
 

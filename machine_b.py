@@ -281,6 +281,9 @@ def run_machine_b(tokenizer, model, conn):
                 h.remove()
             validation_hooks = []
 
+            for idx, tensor in layer_outputs_b.items():
+                print(f"Layer {idx} shape after first pass removal: {tensor.shape}")
+            
             print("Machine B first pass")
             os.makedirs("./received", exist_ok=True)
             receive_msg_file(conn, MSG_FIRST_PASS,"./received/hidden.pt")
