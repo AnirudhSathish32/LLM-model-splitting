@@ -123,7 +123,7 @@ if __name__ == "__main__":
     print(f"{'='*55}")
     print(f"Split Response: {split_response}")
     print(f"{'-'*55}")
-    print(f"Full Response:{full_response}")
+    print(f"Full Response: {full_response}")
     print(f"{'-'*55}")
     print(f"{'='*55}")
 

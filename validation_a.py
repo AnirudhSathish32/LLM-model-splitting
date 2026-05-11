@@ -116,13 +116,13 @@ if __name__ == "__main__":
     validate_all_layers(full_result["layer_outputs"], all_layer_outputs)
 
     # ---- Response Comparison ----
-    
+
     print(f"\n{'='*55}")
     print("RESOURCE COMPARISON")
     print(f"{'='*55}")
     print(f"Split Response: {split_response}")
     print(f"{'-'*55}")
-    print(f"Full Response:{full_response}")
+    print(f"Full Response: {full_response}")
     print(f"{'-'*55}")
     print(f"{'='*55}")
 
