@@ -270,6 +270,10 @@ def run_machine_b(tokenizer, model, conn):
     
     while True:
         if first_pass:
+            for h in validation_hooks:
+                h.remove()
+            validation_hooks = []
+
             print("Machine B first pass")
             os.makedirs("./received", exist_ok=True)
             receive_msg_file(conn, MSG_FIRST_PASS,"./received/hidden.pt")
