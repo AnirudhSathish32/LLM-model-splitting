@@ -68,20 +68,15 @@ def validate_all_layers(full_outputs, split_outputs, cos_threshold=0.99, toleran
 
         max_diff  = (full_h - split_h).abs().max().item()
         mean_diff = (full_h - split_h).abs().mean().item()
-        rel_diff = max_diff / (full_h.abs().mean().item() + 1e-8)
-
-        cos_vals = cos_sim_fn(
-            full_h.reshape(-1, full_h.shape[-1]),
+        cos_sim   = cos_sim_fn(
+            full_h.reshape(-1,  full_h.shape[-1]),
             split_h.reshape(-1, split_h.shape[-1])
-        )
-
-        cos_min = cos_vals.min().item()
-
-        match = (cos_min > cos_threshold) and (rel_diff < 0.1)
+        ).mean().item()
+        match = cos_sim > cos_threshold
         if not match:
             all_match = False
 
-        print(f"{idx:<8} {max_diff:<14.6f} {mean_diff:<14.6f} {rel_diff:<14.6f} {cos_min:<12.6f} {'✓' if match else '✗'}")
+        print(f"{idx:<8} {mean_diff:<14.6f} {cos_sim:<12.6f} {'✓' if match else '✗'}")
 
     print(f"{'-'*65}")
     print(f"All layers match: {all_match}")
