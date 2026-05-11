@@ -84,7 +84,6 @@ if __name__ == "__main__":
     model_path = "./llama-3b"
     stopping_layer = 14
     starting_layer = stopping_layer + 1
-    full
     prompt = "Hello world"
     tokens_to_generate = 50 
 
