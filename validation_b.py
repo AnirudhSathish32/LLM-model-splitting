@@ -90,7 +90,7 @@ def validate_all_layers(full_outputs, split_outputs, cos_threshold=0.99, toleran
 
 if __name__ == "__main__":
     # ---- Split generation ----
-    print("\n[2] Running split generation...")
+    print("\n[1] Running split generation...")
     conn = machine_b.setup_machine_b_conn()
     model, tokenizer = machine_b.setup_model_b(STOPPING_LAYER, MODEL_PATH)
     split_monitor = ResourceMonitor()
@@ -103,7 +103,7 @@ if __name__ == "__main__":
     split_stats = split_monitor.summary()
 
     # ---- Full generation ----
-    print("\n[1] Running full generation...")
+    print("\n[2] Running full generation...")
     full_monitor = ResourceMonitor()
     full_monitor.start()
     full_start  = time.time()
