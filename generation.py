@@ -106,6 +106,14 @@ def capture_layers(model, inputs, label, stopping_layer):
 def default_generation(model_path, prompt, stopping_layer):
     model     = AutoModelForCausalLM.from_pretrained(model_path, output_hidden_states=True)
     tokenizer = AutoTokenizer.from_pretrained(model_path)
+    
+    messages = [{"role": "user", "content": prompt}]
+    prompt = tokenizer.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=True
+    )
+    
     inputs    = tokenizer(prompt, return_tensors="pt")
     model.eval()
 

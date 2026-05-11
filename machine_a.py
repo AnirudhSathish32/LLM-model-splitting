@@ -297,8 +297,8 @@ def run_machine_a(tokens_to_generate, stopping_layer, tokenizer, inputs, model, 
                 h.remove()
             validation_hooks = []
 
-            for idx, tensor in layer_outputs.items():
-                print(f"Layer {idx} shape after first pass removal: {tensor.shape}")
+            #for idx, tensor in layer_outputs.items():
+                #print(f"Layer {idx} shape after first pass removal: {tensor.shape}")
 
             save_handoff_package(hidden, position_embeddings, position_ids)
 
