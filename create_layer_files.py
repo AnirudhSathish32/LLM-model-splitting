@@ -10,7 +10,7 @@ from config import (
 os.makedirs(LAYERS_DIR, exist_ok=True)
 
 print("Loading full model...")
-model = AutoModelForCausalLM.from_pretrained(MODEL_PATH, dtype=torch.float16)
+model = AutoModelForCausalLM.from_pretrained(MODEL_PATH)
 full_state = model.state_dict()
 
 # Save each layer separately

@@ -375,7 +375,7 @@ def run_machine_a(tokens_to_generate, stopping_layer, tokenizer, inputs, model, 
     machine_b_layer_outputs = receive_layers(conn)
     print("Sending ttft to Machine B")
     ttft = ttft_result["ttft"]
-    send_ttft(ttft)
+    send_ttft(conn, ttft)
 
     h1.remove()
     h2.remove()
