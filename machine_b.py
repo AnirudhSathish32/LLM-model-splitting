@@ -271,7 +271,7 @@ def run_machine_b(tokenizer, model, stopping_layer, conn):
     # Register validation hooks on all layers
     validation_hooks = []
     for i in range(len(model.model.layers)):
-        print(f"hook registered to layer {i}")
+        print(f"hook registered to layer {i + stopping_layer}")
         validation_hooks.append(
             model.model.layers[i].register_forward_hook(make_validation_hook(i))
         )
