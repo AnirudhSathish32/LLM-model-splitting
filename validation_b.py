@@ -48,6 +48,7 @@ class ResourceMonitor:
     
 def validate_all_layers(full_outputs, split_outputs, tolerance=1e-2):
     cos_sim_fn = torch.nn.CosineSimilarity(dim=-1)
+    device = "cpu"
 
     print(f"\n{'='*65}")
     print("LAYER VALIDATION — Full vs Split (all 28 layers)")
@@ -61,8 +62,8 @@ def validate_all_layers(full_outputs, split_outputs, tolerance=1e-2):
             print(f"{idx:<8} NOT CAPTURED")
             continue
 
-        full_h  = full_outputs[idx].float()
-        split_h = split_outputs[idx].float()
+        full_h  = full_outputs[idx].float().to(device)
+        split_h = split_outputs[idx].float().to(device)
 
         max_diff  = (full_h - split_h).abs().max().item()
         mean_diff = (full_h - split_h).abs().mean().item()
