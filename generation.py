@@ -6,6 +6,7 @@ import threading
 import os
 from config import (
     MODEL_PATH,
+    DTYPE,
     PROMPT,
     STOPPING_LAYER,
     TOKENS_TO_GENERATE,
@@ -113,7 +114,8 @@ def capture_layers(model, inputs, label, stopping_layer):
 def default_generation(model_path, prompt, stopping_layer, tokens_to_generate):
     model = AutoModelForCausalLM.from_pretrained(
         model_path, 
-        device_map=DEVICE
+        device_map=DEVICE,
+        dtype=DTYPE
         )
     
     tokenizer = AutoTokenizer.from_pretrained(model_path)

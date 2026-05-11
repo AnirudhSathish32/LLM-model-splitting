@@ -2,7 +2,7 @@ import torch
 import os
 
 # ================================================================
-# EVERYTHING BUT DEVICE, HANDOFF_DIR AND RECEIVED_DIR MUST BE SAME
+# EVERYTHING BUT DEVICE, HANDOFF_DIR, LAYERS_DIR AND RECEIVED_DIR MUST BE SAME
 # ACROSS MACHINE_A AND MACHINE_B
 # ================================================================
 
@@ -11,6 +11,7 @@ import os
 # ================================================================
 MODEL_PATH     = "./llama-8b"
 STOPPING_LAYER = 16
+DTYPE = torch.float16
 
 # ================================================================
 # GENERATION CONFIG

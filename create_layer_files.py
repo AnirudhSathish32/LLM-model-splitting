@@ -4,13 +4,14 @@ import torch
 import os
 from config import (
     MODEL_PATH,
+    DTYPE,
     LAYERS_DIR
 )
 
 os.makedirs(LAYERS_DIR, exist_ok=True)
 
 print("Loading full model...")
-model = AutoModelForCausalLM.from_pretrained(MODEL_PATH)
+model = AutoModelForCausalLM.from_pretrained(MODEL_PATH, dtype=DTYPE)
 full_state = model.state_dict()
 
 # Save each layer separately
