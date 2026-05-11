@@ -245,7 +245,7 @@ def split_2(hidden, position_embeddings, position_ids, model, cache_b=None):
     return  next_token_id, cache_b
 
 
-def run_machine_b(tokenizer, model, conn):
+def run_machine_b(tokenizer, model, stopping_layer, conn):
     generated_token_ids = []
     cache_b = None
     position_embeddings = None
@@ -258,13 +258,14 @@ def run_machine_b(tokenizer, model, conn):
     layer_times_b   = {}
 
     def make_validation_hook(idx):
+        original_idx = idx + stopping_layer 
         def hook_fn_validation(module, input, output):
             t = time.time()
             hidden = output[0].detach().clone()
             if hidden.dim() == 2:
                 hidden = hidden.unsqueeze(0)
-            layer_outputs_b[idx] = hidden
-            layer_times_b[idx]   = time.time() - t
+            layer_outputs_b[original_idx] = hidden
+            layer_times_b[original_idx]   = time.time() - t
         return hook_fn_validation
 
     # Register validation hooks on all layers
@@ -350,7 +351,7 @@ if __name__ == "__main__":
     conn = setup_machine_b_conn()
     model, tokenizer = setup_model_b(stopping_layer, model_path)
     try:
-        response, all_layer_outputs = run_machine_b(tokenizer, model, conn)
+        response, all_layer_outputs = run_machine_b(tokenizer, model, stopping_layer, conn)
         print("response:", response)
     finally:
         conn.close()

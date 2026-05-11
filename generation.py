@@ -107,7 +107,6 @@ def default_generation(model_path, prompt, stopping_layer, tokens_to_generate):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model = AutoModelForCausalLM.from_pretrained(
         model_path, 
-        output_hidden_states=True,
         device_map=device
         )
     
@@ -121,6 +120,8 @@ def default_generation(model_path, prompt, stopping_layer, tokens_to_generate):
     )
     
     inputs = tokenizer(prompt, return_tensors="pt")
+    inputs = {k: v.to(device) for k, v in inputs.items()}
+
     model.eval()
 
     # Capture everything in one call
