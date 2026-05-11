@@ -81,7 +81,7 @@ def validate_all_layers(full_outputs, split_outputs, cos_threshold=0.99, toleran
         if not match:
             all_match = False
 
-        print(f"{idx:<8} {max_diff:<14.6f} {mean_diff:<14.6f} {rel_diff:<14.6f} {cos_sim:<12.6f} {'✓' if match else '✗'}")
+        print(f"{idx:<8} {max_diff:<14.6f} {mean_diff:<14.6f} {rel_diff:<14.6f} {cos_min:<12.6f} {'✓' if match else '✗'}")
 
     print(f"{'-'*65}")
     print(f"All layers match: {all_match}")
