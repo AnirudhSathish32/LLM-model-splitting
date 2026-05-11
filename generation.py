@@ -111,7 +111,7 @@ def default_generation(model_path, prompt, stopping_layer, tokens_to_generate):
         device_map=device
         )
     
-    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    tokenizer = AutoTokenizer.from_pretrained(model_path).to(device)
     
     messages = [{"role": "user", "content": prompt}]
     prompt = tokenizer.apply_chat_template(

@@ -48,7 +48,7 @@ class ResourceMonitor:
     
 def validate_all_layers(full_outputs, split_outputs, tolerance=1e-2):
     cos_sim_fn = torch.nn.CosineSimilarity(dim=-1)
-    device = "cpu"
+    device = "gpu" if torch.cuda.is_available() else "cpu"
 
     print(f"\n{'='*65}")
     print("LAYER VALIDATION — Full vs Split (all 28 layers)")

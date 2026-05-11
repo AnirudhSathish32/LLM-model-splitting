@@ -323,6 +323,9 @@ def run_machine_b(tokenizer, model, conn):
             generated_token_ids.append(next_token_id.item())
             send_token(conn, next_token_id)
 
+    print(f"layer_outputs_b keys before send: {sorted(layer_outputs_b.keys())}")
+    print(f"layer_outputs_b length: {len(layer_outputs_b)}")
+
     print("Receiving Machine A layer outputs...")
     machine_a_layer_outputs = receive_layers(conn)
 
