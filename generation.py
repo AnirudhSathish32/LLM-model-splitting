@@ -111,7 +111,7 @@ def default_generation(model_path, prompt, stopping_layer):
 
     # Capture everything in one call
     layer_outputs, handoff_package, ttft, layer_times = capture_layers(
-        model, inputs, "Full Generation"
+        model, inputs, "Full Generation", stopping_layer
     )
 
     gen_start = time.time()

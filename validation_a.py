@@ -84,6 +84,7 @@ if __name__ == "__main__":
     model_path = "./llama-3b"
     stopping_layer = 14
     starting_layer = stopping_layer + 1
+    full
     prompt = "Hello world"
     tokens_to_generate = 50 
 
@@ -95,6 +96,7 @@ if __name__ == "__main__":
     split_monitor.start()
     split_start = time.time()
     response, all_layer_outputs = machine_a.run_machine_a(tokens_to_generate, stopping_layer, tokenizer, inputs, model, conn)
+    print(f"Response: {response}")
     split_time  = time.time() - split_start
     split_monitor.stop()
     split_stats = split_monitor.summary()

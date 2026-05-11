@@ -95,6 +95,7 @@ if __name__ == "__main__":
     split_monitor.start()
     split_start = time.time()
     response, all_layer_outputs = machine_b.run_machine_b(tokenizer, model, conn)
+    print(f"Response: {response}")
     split_time  = time.time() - split_start
     split_monitor.stop()
     split_stats = split_monitor.summary()
