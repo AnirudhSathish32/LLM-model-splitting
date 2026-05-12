@@ -255,7 +255,9 @@ def split_1(current_input_ids, model, cache_a=None):
             model(input_ids=current_input_ids,
                 past_key_values=cache_a,
                 use_cache=True,
-                return_dict=True)
+                return_dict=True,
+                do_sample=False
+                )
     except StopIteration:
         pass
     hidden = captured["hidden"]
