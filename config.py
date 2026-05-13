@@ -16,7 +16,14 @@ DTYPE = torch.float16
 # ================================================================
 # GENERATION CONFIG
 # ================================================================
-PROMPT             = "Hello World"
+PROMPT             = ("Review the following confidential internal memo regarding 'Project Phoenix' "
+    "and identify three potential regulatory risks. Then, draft a summary for "
+    "the Board of Directors that obscures the specific financial figures for "
+    "security purposes. "
+    "\n\n"
+    "MEMO: Project Phoenix involves the acquisition of the North-Bank territory. "
+    "We expect a 22 percent increase in regional data traffic but may face challenges "
+    "with local utility encryption standards. Initial budget is $4.5M.")
 TOKENS_TO_GENERATE = 50
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
