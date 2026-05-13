@@ -323,10 +323,10 @@ def run_machine_b(tokenizer, model, stopping_layer, tokens_to_generate, conn):
             #load file into memory
 
         else:
-            receive_msg_file(conn, f"{RECEIVED_DIR}/hidden.pt")
-            receive_msg_file(conn, f"{RECEIVED_DIR}/sin.pt")
-            receive_msg_file(conn, f"{RECEIVED_DIR}/position_ids.pt")
-            receive_msg_file(conn, f"{RECEIVED_DIR}/cos.pt")
+            receive_msg_file(conn, MSG_NEXT_PASS, f"{RECEIVED_DIR}/hidden.pt")
+            receive_msg_file(conn, MSG_NEXT_PASS, f"{RECEIVED_DIR}/sin.pt")
+            receive_msg_file(conn, MSG_NEXT_PASS, f"{RECEIVED_DIR}/position_ids.pt")
+            receive_msg_file(conn, MSG_NEXT_PASS, f"{RECEIVED_DIR}/cos.pt")
             hidden, position_embeddings, position_ids = load_handoff_package()
 
 
