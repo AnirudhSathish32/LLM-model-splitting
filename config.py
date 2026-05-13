@@ -18,7 +18,7 @@ DTYPE = torch.float16
 # ================================================================
 PROMPT             = ("Act as a legal strategist." "List 5 high-stakes considerations for drafting commercial "
                     "contracts to minimize risk and ensure performance. Use one sentence per point.")
-TOKENS_TO_GENERATE = 4
+TOKENS_TO_GENERATE = 40
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # ================================================================

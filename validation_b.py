@@ -137,7 +137,7 @@ if __name__ == "__main__":
     print(f"\n{'='*55}")
     print("RESOURCE COMPARISON: MACHINE B")
     print(f"{'='*55}")
-    print(f"{'Metric':<25} {'Full (' + str(full_model_layers) + ' Layers)':<15} {'Split (' + str(full_model_layers) + ' Layers)':<15}")
+    print(f"{'Metric':<25} {'Full (' + str(full_model_layers) + ' Layers)':<15} {'Split (' + str(split_model_layers) + ' Layers)':<15}")
     print(f"{'-'*55}")
     print(f"{'Time (s)':<25} {full_time:<15.2f} {split_time:<15.2f}")
     print(f"{'Time to First Token (s)':<25} {full_ttft:<15.2f} {split_ttft:<15.2f}")
