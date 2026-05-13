@@ -21,7 +21,9 @@ from config import (
     MSG_EOS,
     MSG_LAYER,
     MSG_TTFT,
+    MSG_STOP,
     RECEIVED_DIR
+    
 )
 
 
@@ -320,10 +322,14 @@ def run_machine_b(tokenizer, model, stopping_layer, conn):
             #load file into memory
 
         else:
-            receive_msg_file(conn, MSG_NEXT_PASS, f"{RECEIVED_DIR}/hidden.pt")
-            receive_msg_file(conn, MSG_NEXT_PASS, f"{RECEIVED_DIR}/sin.pt")
-            receive_msg_file(conn, MSG_NEXT_PASS, f"{RECEIVED_DIR}/position_ids.pt")
-            receive_msg_file(conn, MSG_NEXT_PASS, f"{RECEIVED_DIR}/cos.pt")
+            msg_type = read_TCP_data(conn, 1)[0]
+            if msg_type == MSG_STOP:
+                print("Token Cap Hit exiting loop")
+                break
+            receive_file(conn,  f"{RECEIVED_DIR}/hidden.pt")
+            receive_file(conn,  f"{RECEIVED_DIR}/sin.pt")
+            receive_file(conn,  f"{RECEIVED_DIR}/position_ids.pt")
+            receive_file(conn,  f"{RECEIVED_DIR}/cos.pt")
             hidden, position_embeddings, position_ids = load_handoff_package()
 
 
@@ -346,7 +352,7 @@ def run_machine_b(tokenizer, model, stopping_layer, conn):
             send_eos(conn)
             print("Sent EOS Token")
             break
-        
+
         else:
             generated_token_ids.append(next_token_id.item())
             send_token(conn, next_token_id)

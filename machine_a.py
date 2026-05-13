@@ -25,6 +25,7 @@ from config import (
     MSG_EOS,
     MSG_LAYER,
     MSG_TTFT,
+    MSG_STOP,
     HANDOFF_DIR
 )
 
@@ -81,6 +82,10 @@ def setup_model_a(stopping_layer:int, model_path, prompt):
 # ============================================================
 # MESSAGE PROTOCOL / SOCKET COMMUNICATION
 # ============================================================
+
+def send_stop(conn):
+    conn.sendall(bytes([MSG_STOP]))
+    print("Sent STOP signal to Machine B")
 
 def send_ttft(conn, ttft):
     """
@@ -310,7 +315,7 @@ def run_machine_a(tokens_to_generate, stopping_layer, tokenizer, inputs, model, 
     h1 = model.model.layers[stopping_layer - 1].register_forward_hook(hook_fn)
     h2 = model.model.layers[stopping_layer - 1].register_forward_pre_hook(hook_pos, with_kwargs=True)
 
-    while True:
+    while token_count < tokens_to_generate:
         
         print(f"Starting Split 1: Pass #{token_count + 1}")
         hidden, position_embeddings, position_ids, cache_a = split_1(current_input_ids, model, cache_a)
@@ -370,6 +375,9 @@ def run_machine_a(tokens_to_generate, stopping_layer, tokenizer, inputs, model, 
             current_input_ids = torch.cat([current_input_ids, next_token_id.unsqueeze(0).to(current_input_ids.device)], dim=-1)
             token_count += 1
             print(f"received token {token_count} \n")
+            if token_count >= tokens_to_generate:
+                send_stop(conn)
+                break
 
     print("Sending Machine A layer outputs to Machine B...")
     send_layers(conn, layer_outputs)

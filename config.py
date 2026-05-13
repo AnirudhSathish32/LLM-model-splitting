@@ -32,6 +32,7 @@ MSG_TOKEN      = 3
 MSG_EOS        = 4
 MSG_LAYER      = 5
 MSG_TTFT       = 6
+MSG_STOP       = 7
 
 ANIRUDH_MACHINE_A = "100.74.100.92"
 PRANATHI_MACHINE_A = ""
