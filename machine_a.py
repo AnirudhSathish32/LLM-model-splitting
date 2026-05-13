@@ -311,7 +311,7 @@ def run_machine_a(tokens_to_generate, stopping_layer, tokenizer, inputs, model, 
 
     while token_count < tokens_to_generate:
         
-        print("Starting Split 1")
+        print(f"Starting Split 1: Pass #{token_count + 1}")
         hidden, position_embeddings, position_ids, cache_a = split_1(current_input_ids, model, cache_a)
         # perform split 1
         
@@ -330,7 +330,7 @@ def run_machine_a(tokens_to_generate, stopping_layer, tokenizer, inputs, model, 
             send_msg_file(conn, MSG_FIRST_PASS, f"{HANDOFF_DIR}/sin.pt")
             send_msg_file(conn, MSG_FIRST_PASS, f"{HANDOFF_DIR}/position_ids.pt")
             send_msg_file(conn, MSG_FIRST_PASS, f"{HANDOFF_DIR}/cos.pt")
-            print(hidden.dtype)
+            #print(hidden.dtype)
             first_pass = False
 
             #export captured["position_ids"], captured["position_embeddings"] and captured["hidden"]

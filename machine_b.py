@@ -117,12 +117,12 @@ def send_token(conn, token):
     conn.sendall(MSG_TOKEN.to_bytes(1, byteorder="big"))
     conn.sendall(len(payload).to_bytes(8, byteorder="big"))
     conn.sendall(payload)
-    print(f"Token sent to Machine A")
+    #print(f"Token sent to Machine A")
 
 def send_eos(conn):
     conn.sendall(MSG_EOS.to_bytes(1, byteorder="big"))
     conn.sendall((0).to_bytes(8, byteorder="big"))
-    print("EOS sent to Machine A")
+    #print("EOS sent to Machine A")
 
 def receive_msg_file(conn, expected_msg_type, save_path):
     msg_type = read_TCP_data(conn, 1)[0]
@@ -327,7 +327,7 @@ def run_machine_b(tokenizer, model, stopping_layer, conn):
             hidden, position_embeddings, position_ids = load_handoff_package()
 
 
-        print("Starting Split 2")
+        print(f"Starting Split 2: Pass #{token_count + 1}")
         next_token_id, cache_b = split_2(hidden, position_embeddings, position_ids, model, cache_b)
         #print(hidden.dtype, hidden.device)
         for h in validation_hooks:

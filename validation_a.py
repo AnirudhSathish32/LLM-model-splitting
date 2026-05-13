@@ -57,7 +57,7 @@ def validate_all_layers(full_outputs, split_outputs, full_model, split_model, co
     cos_sim_fn = torch.nn.CosineSimilarity(dim=-1)
 
     print(f"\n{'='*65}")
-    print(f"LAYER VALIDATION: MACHINE A  — Full ({len(full_model.model.layers)}) Layers vs Split ({len(split_model.model.layers)} Layers)")
+    print(f"LAYER VALIDATION: MACHINE A  — Full ({len(full_model.model.layers)} Layers) vs Split ({len(split_model.model.layers)} Layers)")
     print(f"{'='*65}")
     print(f"{'Layer':<8} {'Mean Diff':<14} {'Cos Sim':<12} {'Match'}")
     print(f"{'-'*65}")
@@ -136,7 +136,7 @@ if __name__ == "__main__":
     print(f"\n{'='*55}")
     print("RESOURCE COMPARISON: MACHINE A")
     print(f"{'='*55}")
-    print(f"{'Metric':<25} {'Full (' + str(full_model_layers) + 'Layers)':<15} {'Split (' + str(full_model_layers) + 'Layers)':<15}")
+    print(f"{'Metric':<25} {'Full (' + str(full_model_layers) + ' Layers)':<15} {'Split (' + str(split_model_layers) + ' Layers)':<15}")
     print(f"{'-'*55}")
     print(f"{'Time (s)':<25} {full_time:<15.2f} {split_time:<15.2f}")
     print(f"{'Time to First Token (s)':<25} {full_ttft:<15.2f} {split_ttft:<15.2f}")
