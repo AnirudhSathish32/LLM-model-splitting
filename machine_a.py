@@ -73,8 +73,8 @@ def setup_model_a(stopping_layer:int, model_path, prompt):
 
     inputs = tokenizer(prompt, return_tensors="pt").to(DEVICE)
 
-    print(f"Load time: {time.time() - start:.2f}s")
-    print("Machine A ready")
+    print(f"Load time: {time.time() - start:.2f}s \n")
+    print("Machine A ready \n")
 
     return model, inputs, tokenizer
 
@@ -364,7 +364,6 @@ def run_machine_a(tokens_to_generate, stopping_layer, tokenizer, inputs, model, 
             break
 
         if msg_type == MSG_TOKEN:
-            print("receiving token")
             next_token_id = torch.load(io.BytesIO(payload))
             generated_token_ids.append(next_token_id.item())
             current_input_ids = torch.cat([current_input_ids, next_token_id.unsqueeze(0).to(current_input_ids.device)], dim=-1)

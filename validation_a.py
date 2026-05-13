@@ -57,7 +57,7 @@ def validate_all_layers(full_outputs, split_outputs, full_model, split_model, co
     cos_sim_fn = torch.nn.CosineSimilarity(dim=-1)
 
     print(f"\n{'='*65}")
-    print(f"LAYER VALIDATION: MACHINE A  — Full {len(full_model.model.layers)} vs Split {len(split_model.model.layers)}")
+    print(f"LAYER VALIDATION: MACHINE A  — Full ({len(full_model.model.layers)}) Layers vs Split ({len(split_model.model.layers)} Layers)")
     print(f"{'='*65}")
     print(f"{'Layer':<8} {'Mean Diff':<14} {'Cos Sim':<12} {'Match'}")
     print(f"{'-'*65}")
@@ -126,7 +126,7 @@ if __name__ == "__main__":
     print(f"Split Response: {split_response}")
     print(f"{'-'*55}")
     print(f"MODEL: {os.path.basename(MODEL_PATH)}")
-    print(f"Split Query: {PROMPT}")
+    print(f"Full Query: {PROMPT}")
     print(f"Full Response: {full_response}")
     print(f"{'-'*55}")
 

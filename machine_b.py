@@ -58,13 +58,13 @@ def setup_model_b(stopping_layer:int, model_path):
     kept_layers = model.model.layers[stopping_layer:]
     model.model.layers = nn.ModuleList(kept_layers)
     
-    for i, layer in enumerate(model.model.layers):
-        print(i, layer.input_layernorm.weight.device)
+    #for i, layer in enumerate(model.model.layers):
+        #print(i, layer.input_layernorm.weight.device)
 
     model.eval()
 
-    print(f"Load time: {time.time() - start:.2f}s")
-    print("Machine B ready")
+    print(f"Load time: {time.time() - start:.2f}s \n")
+    print("Machine B ready \n")
 
     return model, tokenizer
 
