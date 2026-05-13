@@ -375,9 +375,6 @@ def run_machine_a(tokens_to_generate, stopping_layer, tokenizer, inputs, model, 
             current_input_ids = torch.cat([current_input_ids, next_token_id.unsqueeze(0).to(current_input_ids.device)], dim=-1)
             token_count += 1
             print(f"received token {token_count} \n")
-            if token_count >= tokens_to_generate:
-                send_stop(conn)
-                break
 
     print("Sending Machine A layer outputs to Machine B...")
     send_layers(conn, layer_outputs)
