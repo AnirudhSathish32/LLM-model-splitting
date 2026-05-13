@@ -16,8 +16,9 @@ DTYPE = torch.float16
 # ================================================================
 # GENERATION CONFIG
 # ================================================================
-PROMPT             = ("Provide a checklist of the five most critical strategic considerations when drafting a commercial agreement.")
-TOKENS_TO_GENERATE = 50
+PROMPT             = ("Act as a legal strategist." "List 5 high-stakes considerations for drafting commercial "
+                    "contracts to minimize risk and ensure performance. Use one sentence per point.")
+TOKENS_TO_GENERATE = 100
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # ================================================================

@@ -310,7 +310,7 @@ def run_machine_a(tokens_to_generate, stopping_layer, tokenizer, inputs, model, 
     h1 = model.model.layers[stopping_layer - 1].register_forward_hook(hook_fn)
     h2 = model.model.layers[stopping_layer - 1].register_forward_pre_hook(hook_pos, with_kwargs=True)
 
-    while token_count < tokens_to_generate:
+    while True:
         
         print(f"Starting Split 1: Pass #{token_count + 1}")
         hidden, position_embeddings, position_ids, cache_a = split_1(current_input_ids, model, cache_a)

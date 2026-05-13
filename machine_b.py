@@ -346,6 +346,7 @@ def run_machine_b(tokenizer, model, stopping_layer, conn):
             send_eos(conn)
             print("Sent EOS Token")
             break
+        
         else:
             generated_token_ids.append(next_token_id.item())
             send_token(conn, next_token_id)
