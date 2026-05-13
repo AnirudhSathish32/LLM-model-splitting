@@ -160,6 +160,7 @@ def default_generation(model_path, prompt, stopping_layer, tokens_to_generate):
     print(f"Response: {output_response}")
 
     return {
+        "model": model,
         "response":       output_response,
         "layer_outputs":  layer_outputs,
         "handoff_package": handoff_package,

@@ -53,11 +53,11 @@ class ResourceMonitor:
             "gpu_peak_gb": max(gpus),
         }
     
-def validate_all_layers(full_outputs, split_outputs, cos_threshold=0.99, tolerance=1e-2):
+def validate_all_layers(full_outputs, split_outputs, full_model, split_model, cos_threshold=0.99, tolerance=1e-2):
     cos_sim_fn = torch.nn.CosineSimilarity(dim=-1)
 
     print(f"\n{'='*65}")
-    print("LAYER VALIDATION — Full vs Split (all 28 layers)")
+    print(f"LAYER VALIDATION: MACHINE B — Full {len(full_model.model.layers)} vs Split {len(split_model.model.layers)}")
     print(f"{'='*65}")
     print(f"{'Layer':<8} {'Mean Diff':<14} {'Cos Sim':<12} {'Match'}")
     print(f"{'-'*65}")
@@ -109,26 +109,31 @@ if __name__ == "__main__":
     full_result = generation.default_generation(MODEL_PATH, PROMPT, STOPPING_LAYER, TOKENS_TO_GENERATE)
     full_ttft = full_result["ttft"]
     full_response = full_result["response"]
+    full_model = full_result["model"]
     full_time   = time.time() - full_start
     full_monitor.stop()
     full_stats  = full_monitor.summary()
 
     # ---- Validate ----
-    validate_all_layers(full_result["layer_outputs"], all_layer_outputs)
+    validate_all_layers(full_result["layer_outputs"], all_layer_outputs,full_model, model)
 
     # ---- Response Comparison ----
     
     print(f"\n{'='*55}")
-    print("RESPONSE COMPARISON")
+    print("RESPONSE COMPARISON: MACHINE B")
     print(f"{'='*55}")
+    print(f"MODEL: {os.path.basename(MODEL_PATH)}")
+    print(f"Split Query: {PROMPT}")
     print(f"Split Response: {split_response}")
     print(f"{'-'*55}")
+    print(f"MODEL: {os.path.basename(MODEL_PATH)}")
+    print(f"Split Query: {PROMPT}")
     print(f"Full Response: {full_response}")
     print(f"{'-'*55}")
 
     # ---- Resource comparison ----
     print(f"\n{'='*55}")
-    print("RESOURCE COMPARISON")
+    print("RESOURCE COMPARISON: MACHINE B")
     print(f"{'='*55}")
     print(f"{'Metric':<25} {'Full':<15} {'Split':<15}")
     print(f"{'-'*55}")

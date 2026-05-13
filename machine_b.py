@@ -329,7 +329,7 @@ def run_machine_b(tokenizer, model, stopping_layer, conn):
 
         print("Starting Split 2")
         next_token_id, cache_b = split_2(hidden, position_embeddings, position_ids, model, cache_b)
-        print(hidden.dtype, hidden.device)
+        #print(hidden.dtype, hidden.device)
         for h in validation_hooks:
                 h.remove()
         validation_hooks = []
@@ -343,16 +343,17 @@ def run_machine_b(tokenizer, model, stopping_layer, conn):
         if next_token_id.item() in eos_ids:
             # if we have detect eos/reached token count then we call machine A to start decoding the response by sending eos_detected = True
             eos_detected = True
-            print("sending eos")
             send_eos(conn)
+            print("Sent EOS Token")
             break
         else:
-            print("sending token")
             generated_token_ids.append(next_token_id.item())
             send_token(conn, next_token_id)
+            token_count += 1
+            print(f"Sent Token {token_count} \n")
 
-    print(f"layer_outputs_b keys before send: {sorted(layer_outputs_b.keys())}")
-    print(f"layer_outputs_b length: {len(layer_outputs_b)}")
+    #print(f"layer_outputs_b keys before send: {sorted(layer_outputs_b.keys())}")
+    #print(f"layer_outputs_b length: {len(layer_outputs_b)}")
 
     print("Receiving Machine A layer outputs...")
     machine_a_layer_outputs = receive_layers(conn)
@@ -365,7 +366,7 @@ def run_machine_b(tokenizer, model, stopping_layer, conn):
 
     ttft = receive_ttft(conn)
     response = tokenizer.decode(generated_token_ids, skip_special_tokens=True)
-    get_system_stats("==================== SPLIT GEN STATS ============================")
+    #get_system_stats("==================== SPLIT GEN STATS ============================")
     return response, all_layer_outputs, ttft
 
 # ============================================================

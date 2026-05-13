@@ -369,7 +369,7 @@ def run_machine_a(tokens_to_generate, stopping_layer, tokenizer, inputs, model, 
             generated_token_ids.append(next_token_id.item())
             current_input_ids = torch.cat([current_input_ids, next_token_id.unsqueeze(0).to(current_input_ids.device)], dim=-1)
             token_count += 1
-            print(token_count)
+            print(f"received token {token_count} \n")
 
     print("Sending Machine A layer outputs to Machine B...")
     send_layers(conn, layer_outputs)
