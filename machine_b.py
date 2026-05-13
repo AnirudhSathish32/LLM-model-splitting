@@ -22,6 +22,7 @@ from config import (
     MSG_LAYER,
     MSG_TTFT,
     MSG_STOP,
+    TOKENS_TO_GENERATE,
     RECEIVED_DIR
     
 )
@@ -273,7 +274,7 @@ def split_2(hidden, position_embeddings, position_ids, model, cache_b=None):
     return  next_token_id, cache_b
 
 
-def run_machine_b(tokenizer, model, stopping_layer, conn):
+def run_machine_b(tokenizer, model, stopping_layer, tokens_to_generate, conn):
     generated_token_ids = []
     cache_b = None
     position_embeddings = None
@@ -322,14 +323,10 @@ def run_machine_b(tokenizer, model, stopping_layer, conn):
             #load file into memory
 
         else:
-            msg_type = read_TCP_data(conn, 1)[0]
-            if msg_type == MSG_STOP:
-                print("Token Cap Hit exiting loop")
-                break
-            receive_file(conn,  f"{RECEIVED_DIR}/hidden.pt")
-            receive_file(conn,  f"{RECEIVED_DIR}/sin.pt")
-            receive_file(conn,  f"{RECEIVED_DIR}/position_ids.pt")
-            receive_file(conn,  f"{RECEIVED_DIR}/cos.pt")
+            receive_msg_file(conn, f"{RECEIVED_DIR}/hidden.pt")
+            receive_msg_file(conn, f"{RECEIVED_DIR}/sin.pt")
+            receive_msg_file(conn, f"{RECEIVED_DIR}/position_ids.pt")
+            receive_msg_file(conn, f"{RECEIVED_DIR}/cos.pt")
             hidden, position_embeddings, position_ids = load_handoff_package()
 
 
@@ -358,6 +355,8 @@ def run_machine_b(tokenizer, model, stopping_layer, conn):
             send_token(conn, next_token_id)
             token_count += 1
             print(f"Sent Token {token_count} \n")
+            if token_count >= tokens_to_generate:
+                break
 
     #print(f"layer_outputs_b keys before send: {sorted(layer_outputs_b.keys())}")
     #print(f"layer_outputs_b length: {len(layer_outputs_b)}")
@@ -384,7 +383,7 @@ if __name__ == "__main__":
     conn = setup_machine_b_conn()
     model, tokenizer = setup_model_b(STOPPING_LAYER, MODEL_PATH)
     try:
-        response, all_layer_outputs, ttft = run_machine_b(tokenizer, model, STOPPING_LAYER, conn)
+        response, all_layer_outputs, ttft = run_machine_b(tokenizer, model, STOPPING_LAYER, TOKENS_TO_GENERATE, conn)
         print("response:", response)
     finally:
         conn.close()
