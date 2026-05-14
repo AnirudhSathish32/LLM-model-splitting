@@ -10,14 +10,14 @@ import os
 # MODEL CONFIG
 # ================================================================
 MODEL_PATH     = "./llama-8b"
-STOPPING_LAYER = 16
+STOPPING_LAYER = 20
 DTYPE = torch.float16
 
 # ================================================================
 # GENERATION CONFIG
 # ================================================================
-PROMPT             = ("What is the difference between revenue and profit? Answer in one sentence.")
-TOKENS_TO_GENERATE = 25
+PROMPT             = ("What is compound interest?")
+TOKENS_TO_GENERATE = 20
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # ================================================================
