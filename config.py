@@ -9,15 +9,15 @@ import os
 # ================================================================
 # MODEL CONFIG
 # ================================================================
-MODEL_PATH     = "./llama-8b"
-STOPPING_LAYER = 20
+MODEL_PATH     = "./llama-3b"
+STOPPING_LAYER = 15
 DTYPE = torch.float16
 
 # ================================================================
 # GENERATION CONFIG
 # ================================================================
-PROMPT             = ("What is compound interest?")
-TOKENS_TO_GENERATE = 20
+PROMPT             = ("Name 3 key metrics every startup should track. Answer in one sentence")
+TOKENS_TO_GENERATE = 30
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # ================================================================
