@@ -9,16 +9,15 @@ import os
 # ================================================================
 # MODEL CONFIG
 # ================================================================
-MODEL_PATH     = "./llama-3b"
+MODEL_PATH     = "./llama-8b"
 STOPPING_LAYER = 16
 DTYPE = torch.float16
 
 # ================================================================
 # GENERATION CONFIG
 # ================================================================
-PROMPT             = ("Act as a legal strategist." "List 5 high-stakes considerations for drafting commercial "
-                    "contracts to minimize risk and ensure performance. Use one sentence per point.")
-TOKENS_TO_GENERATE = 40
+PROMPT             = ("What is the difference between revenue and profit? Answer in one sentence.")
+TOKENS_TO_GENERATE = 25
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # ================================================================
