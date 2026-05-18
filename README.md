@@ -67,7 +67,7 @@ source .venv/bin/activate
 # Install dependencies
 
 ```bash
-pip install torch transformers accelerate safetensors psutil
+pip install torch transformers accelerate safetensors psutil dotenv
 ```
 
 ---
@@ -141,6 +141,29 @@ layers/
 These files are used so each machine only loads its assigned transformer layers instead of the full model.
 
 ---
+
+---
+
+# Create dotenv file
+
+Both machines must:
+
+Have Tailscale installed
+Be logged into the same Tailscale account
+Be connected and visible to each other on the Tailscale network
+
+Machine A should be the stronger machine, since it will handle the larger portion of the model workload.
+
+Create a .env file in the project root directory:
+
+# Machine A (stronger machine) Tailscale IP
+MACHINE_A_TAILSCALE_IP=100.xx.xx.xx
+
+You can find the Tailscale IP by running:
+
+tailscale ip -4
+
+on Machine A.
 
 # Distributed Execution Flow
 
