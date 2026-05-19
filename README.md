@@ -74,7 +74,7 @@ pip install torch transformers accelerate safetensors psutil dotenv
 
 # Model Setup
 
-Download a HuggingFace-compatible LLaMA model locally.
+Download a HuggingFace-compatible LLaMA model locally on both machines.
 
 Example:
 
@@ -112,7 +112,7 @@ The split architecture assumes both machines are operating on the exact same tra
 
 # Step 1 — Generate Layer Files
 
-Before running distributed inference, layer checkpoints must be extracted from the original downloaded model.
+Before running distributed inference, layer checkpoints must be extracted from the original downloaded model on both machines.
 
 Run:
 
@@ -238,7 +238,8 @@ Run the correct validation script depending on which machine you are using.
 On Machine A run:
 
 ```bash
-python validation_a.py
+python validation_a.py #for validation + metrics collection
+python machine_a # for standard distributed inference
 ```
 
 Machine A:
@@ -247,6 +248,8 @@ Machine A:
 * performs Split 1
 * sends hidden states
 * receives generated tokens
+* performs single machine generation of the same prompt to compare stats
+if we use validation mode
 
 ---
 
@@ -255,7 +258,8 @@ Machine A:
 On Machine B run:
 
 ```bash
-python validation_b.py
+python validation_b.py #for validation + metrics collection
+python machine_b.py # for standard distributed inference
 ```
 
 Machine B:
@@ -264,6 +268,8 @@ Machine B:
 * performs Split 2
 * generates next-token logits
 * sends tokens back
+* performs single machine generation of the same prompt to compare stats
+if we use validation mode
 
 ---
 
