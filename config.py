@@ -19,7 +19,7 @@ DTYPE = torch.float16
 # ================================================================
 # GENERATION CONFIG
 # ================================================================
-PROMPT             = ("Name 3 key metrics every startup should track. Answer in one sentence")
+PROMPT             = ("hello world")
 TOKENS_TO_GENERATE = 30
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
