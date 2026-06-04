@@ -1,11 +1,8 @@
 import torch
 import time
 import os
-import io
 import psutil
 import threading
-import torch.nn.functional as F
-from transformers import AutoModelForCausalLM, AutoTokenizer
 import machine_b
 import generation
 from config import (
