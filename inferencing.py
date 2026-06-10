@@ -8,7 +8,7 @@ from config import (
 )
 
 from hooks import (
-    captured
+    handoff_package
 )
 
 def load_handoff_package(save_dir=RECEIVED_DIR, first_pass=True):
@@ -29,6 +29,7 @@ def save_handoff_package(hidden, position_embeddings, position_ids, save_dir=HAN
     torch.save(position_embeddings[0], f"{save_dir}/cos.pt")
     torch.save(position_embeddings[1], f"{save_dir}/sin.pt")
     torch.save(position_ids, f"{save_dir}/position_ids.pt")
+
 
 def split_2(hidden, position_embeddings, position_ids, model, cache_b=None):
     """
@@ -74,14 +75,13 @@ def split_1(current_input_ids, model, cache_a=None):
             model(input_ids=current_input_ids,
                 past_key_values=cache_a,
                 use_cache=True,
-                return_dict=True,
-                do_sample=False
+                return_dict=True
                 )
     except StopIteration:
         pass
-    hidden = captured["hidden"]
-    position_embeddings = captured["position_embeddings"]
-    position_ids = captured["position_ids"]
-    cache_a = captured["cache_a"]
+    hidden = handoff_package["hidden"]
+    position_embeddings = handoff_package["position_embeddings"]
+    position_ids = handoff_package["position_ids"]
+    cache_a = handoff_package["cache_a"]
 
     return hidden, position_embeddings, position_ids, cache_a

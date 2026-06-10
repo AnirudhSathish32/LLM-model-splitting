@@ -12,7 +12,6 @@ from config import (
     TOKENS_TO_GENERATE,
     DEVICE
 )
-    
 
 class ResourceMonitor:
     def __init__(self, interval=0.1):
