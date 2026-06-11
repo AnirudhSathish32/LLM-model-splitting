@@ -41,6 +41,7 @@ def split_2(hidden, position_embeddings, position_ids, model, cache_b=None):
         cache_b = DynamicCache()
         #for _ in range(len(model.model.layers)):
          #   cache_b.layers.append(DynamicLayer())
+        print(f"  [split_2] fresh cache, type={type(cache_b)}, has get_seq_length={hasattr(cache_b, 'get_seq_length')}")
 
     with torch.no_grad():
         x = hidden
@@ -59,6 +60,9 @@ def split_2(hidden, position_embeddings, position_ids, model, cache_b=None):
             )[0]
             if x.dim() == 2:
                 x = x.unsqueeze(0)
+        print(f"  [split_2] layer0 returned type={type(x)}, len={len(x) if isinstance(x, tuple) else 'n/a'}")
+        print(f"  [split_2] cache len AFTER layer0 = {cache_b.get_seq_length()}")
+        print(f"  [split_2] layer0 keys is None? {cache_b.layers[0].keys is None if cache_b.layers else 'no layers'}")
 
         x = model.model.norm(x)
         logits = model.lm_head(x)
