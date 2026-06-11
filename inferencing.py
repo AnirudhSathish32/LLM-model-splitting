@@ -39,18 +39,23 @@ def split_2(hidden, position_embeddings, position_ids, model, cache_b=None):
     
     if cache_b is None:
         cache_b = DynamicCache()
-        for _ in range(len(model.model.layers)):
-            cache_b.layers.append(DynamicLayer())
+        #for _ in range(len(model.model.layers)):
+         #   cache_b.layers.append(DynamicLayer())
 
     with torch.no_grad():
         x = hidden
 
+        past_len = cache_b.get_seq_length() if cache_b.get_seq_length() is not None else 0
+        seq_len  = x.shape[1]
+        cache_position = torch.arange(past_len, past_len + seq_len, device=x.device)
+
         for i in range(len(model.model.layers)):
             x = model.model.layers[i](
                 x,
-                position_ids= position_ids,
+                cache_position=cache_position,
                 position_embeddings=position_embeddings,
-                past_key_value=cache_b.layers[i]
+                past_key_value=cache_b,
+                use_cache=True,
             )[0]
             if x.dim() == 2:
                 x = x.unsqueeze(0)
