@@ -149,7 +149,7 @@ if __name__ == "__main__":
     server_socket, conn = setup_machine_a_conn()
     model, inputs, tokenizer = setup_model_a(STOPPING_LAYER, MODEL_PATH, PROMPT)
     try:
-        response, all_layer_outputs, ttft = run_machine_a(TOKENS_TO_GENERATE, STOPPING_LAYER, tokenizer, inputs, model, conn)
+        response, all_layer_history, ttft = run_machine_a(TOKENS_TO_GENERATE, STOPPING_LAYER, tokenizer, inputs, model, conn)
         print("Response:", response)
     finally:
         conn.close()
