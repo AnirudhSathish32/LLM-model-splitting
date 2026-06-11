@@ -76,6 +76,8 @@ def run_machine_a(tokens_to_generate, stopping_layer, tokenizer, inputs, model, 
         if first_pass:
             
             hidden, position_embeddings, position_ids, cache_a = split_1(full_sequence_ids, model, cache_a)
+            print(f"A pass {token_count}: feeding shape {full_sequence_ids.shape}, ids {full_sequence_ids.tolist()}")
+            print(f"A pass: cos shape {position_embeddings[0].shape}")
             layer_history[pass_counter["i"], stopping_layer - 1] = {
                 "position_embeddings": (position_embeddings[0].detach().clone(), position_embeddings[1].detach().clone()),
                 "position_ids": position_ids.detach().clone() 
@@ -87,6 +89,8 @@ def run_machine_a(tokens_to_generate, stopping_layer, tokenizer, inputs, model, 
                 save_handoff_package(hidden, position_embeddings, position_ids)
 
             send_handoff(conn, MSG_FIRST_PASS, hidden, position_embeddings, position_ids)
+            print(f"A pass {token_count}: feeding shape {full_sequence_ids.shape}, ids {full_sequence_ids.tolist()}")
+            print(f"A pass: cos shape {position_embeddings[0].shape}")
             #print(hidden.dtype)
             first_pass = False
 

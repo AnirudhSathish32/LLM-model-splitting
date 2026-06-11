@@ -70,6 +70,7 @@ def run_machine_b(tokenizer, model, stopping_layer, tokens_to_generate, conn):
             
             print("Machine B first pass")
             hidden, position_embeddings, position_ids = receive_handoff(conn, expect=MSG_FIRST_PASS)
+            print(f"B pass: cos shape {position_embeddings[0].shape}")
             layer_history[pass_counter["i"], stopping_layer] = {
                 "position_embeddings": (position_embeddings[0].detach().clone(), position_embeddings[1].detach().clone()),
                 "position_ids": position_ids.detach().clone() 
@@ -80,6 +81,7 @@ def run_machine_b(tokenizer, model, stopping_layer, tokens_to_generate, conn):
 
         else:
             hidden, position_embeddings = receive_handoff(conn, expect=MSG_NEXT_PASS)
+            print(f"B pass: cos shape {position_embeddings[0].shape}")
             layer_history[pass_counter["i"], stopping_layer] = {
                 "position_embeddings": (position_embeddings[0].detach().clone(), position_embeddings[1].detach().clone()),
             }
