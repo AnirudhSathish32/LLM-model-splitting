@@ -54,7 +54,7 @@ def run_machine_b(tokenizer, model, stopping_layer, tokens_to_generate, conn):
 
     for i in range(len(model.model.layers)):
         if DEBUG:
-            global_idx = i + stopping_layer - 1
+            global_idx = i + stopping_layer
             pre_timer, hidden_hook = make_layer_hook(boundary, pass_counter, global_idx)
             layer = model.model.layers[i]
             layer_hooks[i] = (
