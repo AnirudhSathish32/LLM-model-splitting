@@ -10,7 +10,8 @@ from config import (
     MSG_FIRST_PASS,
     MSG_NEXT_PASS,
     TOKENS_TO_GENERATE,
-    RECEIVED_DIR
+    RECEIVED_DIR,
+    DEBUG
 )
 from networking import (
 
@@ -20,7 +21,8 @@ from networking import (
     send_token,
     send_eos,
     send_layers,
-    receive_layers
+    receive_layers,
+    receive_handoff
 )
 
 from inferencing import (
@@ -29,72 +31,63 @@ from inferencing import (
 )
 
 from model_loading import (
-    setup_model_b
+    setup_model_b,
+)
+
+from hooks import (
+    make_layer_hook,
+    layer_history,
+    layer_hooks,
+    handoff_package
 )
 
 
 def run_machine_b(tokenizer, model, stopping_layer, tokens_to_generate, conn):
     generated_token_ids = []
     cache_b = None
-    position_embeddings = None
     position_ids = None
     first_pass = True
     token_count = 0 
     eos_detected = False
+    pass_counter = {"i": 0}
+    boundary = stopping_layer - 1
 
-    layer_outputs_b = {}
-    layer_times_b   = {}
-
-    def make_validation_hook(idx):
-        original_idx = idx + stopping_layer
-        def hook_fn_validation(module, input, output):
-            t = time.time()
-            hidden = output[0].detach().clone()
-            if hidden.dim() == 2:
-                hidden = hidden.unsqueeze(0)
-            layer_outputs_b[original_idx] = hidden
-            layer_times_b[original_idx]   = time.time() - t
-        return hook_fn_validation
-
-    # Register validation hooks on all layers
-    validation_hooks = []
     for i in range(len(model.model.layers)):
-        print(f"hook registered to layer {i + stopping_layer}")
-        validation_hooks.append(
-            model.model.layers[i].register_forward_hook(make_validation_hook(i))
-        )
+        if DEBUG:
+            global_idx = i + stopping_layer - 1
+            pre_timer, hidden_hook = make_layer_hook(i, boundary, pass_counter, global_idx)
+            layer = model.model.layers[i]
+            layer_hooks[i] = (
+                layer.register_forward_pre_hook(pre_timer, with_kwargs=True),
+                layer.register_forward_hook(hidden_hook),
+            )
     
-    while True:
+    while eos_detected == False:
         if first_pass:
 
             #for idx, tensor in layer_outputs_b.items():
                 #print(f"Layer {idx} shape after first pass removal: {tensor.shape}")
             
             print("Machine B first pass")
-            os.makedirs(RECEIVED_DIR, exist_ok=True)
-            receive_msg_file(conn, MSG_FIRST_PASS, f"{RECEIVED_DIR}/hidden.pt")
-            receive_msg_file(conn, MSG_FIRST_PASS, f"{RECEIVED_DIR}/sin.pt")
-            receive_msg_file(conn, MSG_FIRST_PASS, f"{RECEIVED_DIR}/position_ids.pt")
-            receive_msg_file(conn, MSG_FIRST_PASS, f"{RECEIVED_DIR}/cos.pt")
+            hidden, position_embeddings, position_ids = receive_handoff(conn, expect=MSG_FIRST_PASS)
+            layer_history[pass_counter["i"], stopping_layer] = {
+                "position_embeddings": (position_embeddings[0].detach().clone(), position_embeddings[1].detach().clone()),
+                "position_ids": position_ids.detach().clone() 
+            }
 
-            hidden, position_embeddings, position_ids = load_handoff_package(first_pass=first_pass)
             first_pass = False
             #load file into memory
 
         else:
-            receive_msg_file(conn, MSG_NEXT_PASS, f"{RECEIVED_DIR}/hidden.pt")
-            receive_msg_file(conn, MSG_NEXT_PASS, f"{RECEIVED_DIR}/sin.pt")
-            receive_msg_file(conn, MSG_NEXT_PASS, f"{RECEIVED_DIR}/position_ids.pt")
-            receive_msg_file(conn, MSG_NEXT_PASS, f"{RECEIVED_DIR}/cos.pt")
-            hidden, position_embeddings, position_ids = load_handoff_package()
+            hidden, position_embeddings = receive_handoff(conn, expect=MSG_NEXT_PASS)
+            layer_history[pass_counter["i"], stopping_layer] = {
+                "position_embeddings": (position_embeddings[0].detach().clone(), position_embeddings[1].detach().clone()),
+            }
 
 
         print(f"Starting Split 2: Pass #{token_count + 1}")
-        next_token_id, cache_b = split_2(hidden, position_embeddings, position_ids, model, cache_b)
+        token, cache_b = split_2(hidden, position_embeddings, position_ids, model, cache_b)
         #print(hidden.dtype, hidden.device)
-        for h in validation_hooks:
-                h.remove()
-        validation_hooks = []
         #perform split 2 and generate the next token
 
         # ---- Check if model is done ----
@@ -102,7 +95,7 @@ def run_machine_b(tokenizer, model, stopping_layer, tokens_to_generate, conn):
         if isinstance(eos_ids, int):
             eos_ids = [eos_ids]
 
-        if next_token_id.item() in eos_ids:
+        if token.item() in eos_ids:
             # if we have detect eos/reached token count then we call machine A to start decoding the response by sending eos_detected = True
             eos_detected = True
             send_eos(conn)
@@ -110,29 +103,34 @@ def run_machine_b(tokenizer, model, stopping_layer, tokens_to_generate, conn):
             break
 
         else:
-            generated_token_ids.append(next_token_id.item())
-            send_token(conn, next_token_id)
+            generated_token_ids.append(token.item())
+            send_token(conn, token)
             token_count += 1
+            pass_counter["i"] += 1
             print(f"Sent Token {token_count} \n")
             if token_count >= tokens_to_generate:
                 break
 
     #print(f"layer_outputs_b keys before send: {sorted(layer_outputs_b.keys())}")
     #print(f"layer_outputs_b length: {len(layer_outputs_b)}")
+    all_layer_history = {}
+    if DEBUG:
+        print("Receiving Machine A layer outputs...")
+        machine_a_layer_history = receive_layers(conn)
 
-    print("Receiving Machine A layer outputs...")
-    machine_a_layer_outputs = receive_layers(conn)
+        print("Sending Machine B layer outputs to Machine A...")
+        send_layers(conn, layer_history)
 
-    print("Sending Machine B layer outputs to Machine A...")
-    send_layers(conn, layer_outputs_b)
-
-    all_layer_outputs = {**machine_a_layer_outputs, **layer_outputs_b}
-    print(len(all_layer_outputs))
-
+        all_layer_history = {**machine_a_layer_history, **layer_history}
+        print(len(all_layer_history))
+        
+        for handles in layer_hooks.values():
+            for h in handles:
+                h.remove()
+    
     ttft = receive_ttft(conn)
     response = tokenizer.decode(generated_token_ids, skip_special_tokens=True)
-    #get_system_stats("==================== SPLIT GEN STATS ============================")
-    return response, all_layer_outputs, ttft
+    return response, all_layer_history, ttft
 
 # ============================================================
 # MAIN ENTRYPOINT
@@ -142,7 +140,7 @@ if __name__ == "__main__":
     conn = setup_machine_b_conn()
     model, tokenizer = setup_model_b(STOPPING_LAYER, MODEL_PATH)
     try:
-        response, all_layer_outputs, ttft = run_machine_b(tokenizer, model, STOPPING_LAYER, TOKENS_TO_GENERATE, conn)
+        response, all_layer_history, ttft = run_machine_b(tokenizer, model, STOPPING_LAYER, TOKENS_TO_GENERATE, conn)
         print("response:", response)
     finally:
         conn.close()

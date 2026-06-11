@@ -6,7 +6,7 @@ layer_hooks = {}
 timing_starts = {}
 
 
-def make_layer_hook(idx, stopping_layer, pass_counter):
+def make_layer_hook(boundary, pass_counter, global_idx):
     """
     Single unified forward hook for each layer.
 
@@ -19,16 +19,16 @@ def make_layer_hook(idx, stopping_layer, pass_counter):
     capture_validation: whether to record validation data (first pass only)
     """
     
-    is_boundary = (idx == stopping_layer - 1)
+    is_boundary = global_idx == boundary
     
 
     def timer_start(module, args, kwargs):
-        key = (pass_counter["i"], idx)
+        key = (pass_counter["i"], global_idx)
         timing_starts[key] = time.perf_counter()
 
 
     def hidden_hook(module, input, output):
-        key = (pass_counter["i"], idx)
+        key = (pass_counter["i"], global_idx)
         t0 = timing_starts.get(key)
         
         if t0 is not None:
@@ -58,5 +58,4 @@ def positional_hook(module, args, kwargs):
     handoff_package["position_embeddings"] = (cos.detach().clone(), sin.detach().clone())
     handoff_package["position_ids"] = kwargs.get("position_ids")
     handoff_package["cache_a"] = kwargs.get("past_key_value")
-    return positional_hook
 

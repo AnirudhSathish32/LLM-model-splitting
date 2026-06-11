@@ -51,7 +51,6 @@ def run_machine_a(tokens_to_generate, stopping_layer, tokenizer, inputs, model, 
     full_sequence_ids = inputs["input_ids"]
     cache_a = None
     position_embeddings = None
-    position_ids = None
     first_pass = True
     boundary = stopping_layer - 1
     pass_counter = {"i": 0}
@@ -61,7 +60,7 @@ def run_machine_a(tokens_to_generate, stopping_layer, tokenizer, inputs, model, 
 
     for i in range(len(model.model.layers)):
         if DEBUG or i == boundary:
-            pre_timer, hidden_hook = make_layer_hook(i, boundary, pass_counter)
+            pre_timer, hidden_hook = make_layer_hook(boundary, pass_counter, i)
             layer = model.model.layers[i]
             layer_hooks[i] = (
                 layer.register_forward_pre_hook(pre_timer, with_kwargs=True),
@@ -95,8 +94,8 @@ def run_machine_a(tokens_to_generate, stopping_layer, tokenizer, inputs, model, 
 
         else:
             hidden, position_embeddings, position_ids, cache_a = split_1(full_sequence_ids[:, -1:], model, cache_a)
-            layer_history[pass_counter, stopping_layer - 1] = {
-                "position_embeddings": position_embeddings.detach().clone(),
+            layer_history[pass_counter["i"], stopping_layer - 1] = {
+                "position_embeddings": (position_embeddings[0].detach().clone(), position_embeddings[1].detach().clone()),
             }
             # perform split 1
             if DEBUG:
@@ -128,15 +127,15 @@ def run_machine_a(tokens_to_generate, stopping_layer, tokenizer, inputs, model, 
         print("Receiving Machine B layer outputs...")
         machine_b_layer_history = receive_layers(conn)
         print("Sending ttft to Machine B")
-        send_ttft(conn, ttft)
+        
 
         all_layer_history = {**layer_history, **machine_b_layer_history}
-        
         
     for handles in layer_hooks.values():
             for h in handles:
                 h.remove()
     position_hook.remove()
+    send_ttft(conn, ttft)
     response = tokenizer.decode(generated_token_ids, skip_special_tokens=True)
 
     return response, all_layer_history, ttft

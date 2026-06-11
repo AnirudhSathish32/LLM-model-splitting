@@ -17,7 +17,9 @@ from config import (
     MSG_LAYER,
     MSG_TTFT,
     MSG_STOP,
-    DEBUG
+    DEBUG,
+    MSG_FIRST_PASS,
+    MSG_NEXT_PASS
 )
 
 def logging(msg):
@@ -29,7 +31,7 @@ def logging(msg):
 # ================================================================
 
 def from_bytes(payload):
-    return torch.load(io.BytesIO, map_location=DEVICE)
+    return torch.load(io.BytesIO(payload), map_location=DEVICE)
 
 def to_bytes(obj):
     buffer = io.BytesIO()
@@ -123,7 +125,7 @@ def send_msg_file(conn, msg_type, filepath):
     logging(f"sent file {filepath}")
 
 def receive_msg_file(conn, expected_msg_type, save_path):
-    _, payload = read_message(conn, expected_msg_type, save_path)
+    _, payload = read_message(conn, expect = expected_msg_type)
     with open(save_path, "wb") as f:
         f.write(payload)
     logging(f"saved file {save_path} ({len(payload)} bytes)")
@@ -149,10 +151,16 @@ def send_handoff(conn, msg_type, hidden, position_embeddings, position_ids=None)
 def receive_handoff(conn, expect=None):
     _, payload = read_message(conn, expect=expect)
     pkg = from_bytes(payload)
-    hidden = pkg["hidden"]
-    position_embeddings = (pkg["cos"], pkg["sin"])
-    position_ids = pkg["position_ids"]
-    return hidden, position_embeddings, position_ids
+    if expect == MSG_FIRST_PASS:
+        hidden = pkg["hidden"]
+        position_embeddings = (pkg["cos"], pkg["sin"])
+        position_ids = pkg["position_ids"]
+        return hidden, position_embeddings, position_ids
+    if expect == MSG_NEXT_PASS:
+        hidden = pkg["hidden"]
+        position_embeddings = (pkg["cos"], pkg["sin"])
+        return hidden, position_embeddings
+    
 
 
 
@@ -176,7 +184,7 @@ def receive_ttft(conn):
     """
 
     _, payload = read_message(conn, expect=MSG_TTFT)
-    ttft = struct.unpack("d>", payload)[0]
+    ttft = struct.unpack(">d", payload)[0]
     logging(f"received TTFT: {ttft:.4f}s")
 
 def send_token(conn, token):
