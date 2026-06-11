@@ -70,7 +70,7 @@ def run_machine_b(tokenizer, model, stopping_layer, tokens_to_generate, conn):
             
             print("Machine B first pass")
             hidden, position_embeddings, position_ids = receive_handoff(conn, expect=MSG_FIRST_PASS)
-            print(f"B pass: cos shape {position_embeddings[0].shape}")
+            
             layer_history[pass_counter["i"], stopping_layer] = {
                 "position_embeddings": (position_embeddings[0].detach().clone(), position_embeddings[1].detach().clone()),
                 "position_ids": position_ids.detach().clone() 
@@ -81,7 +81,7 @@ def run_machine_b(tokenizer, model, stopping_layer, tokens_to_generate, conn):
 
         else:
             hidden, position_embeddings = receive_handoff(conn, expect=MSG_NEXT_PASS)
-            print(f"B pass: cos shape {position_embeddings[0].shape}")
+            
             layer_history[pass_counter["i"], stopping_layer] = {
                 "position_embeddings": (position_embeddings[0].detach().clone(), position_embeddings[1].detach().clone()),
             }
@@ -89,6 +89,12 @@ def run_machine_b(tokenizer, model, stopping_layer, tokens_to_generate, conn):
 
         print(f"Starting Split 2: Pass #{token_count + 1}")
         token, cache_b = split_2(hidden, position_embeddings, position_ids, model, cache_b)
+        # in run_machine_b, before split_2:
+        print(f"B pass {token_count}: hidden {hidden.shape}, "
+        f"cos {position_embeddings[0].shape}, "
+        f"position_ids {position_ids}")
+        # and inside/after split_2, print the cache length:
+        print(f"B cache_b layer0 len: {cache_b.layers[0].keys.shape[-2] if cache_b and cache_b.layers[0].keys is not None else None}")
         #print(hidden.dtype, hidden.device)
         #perform split 2 and generate the next token
 
