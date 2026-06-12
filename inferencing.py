@@ -49,8 +49,6 @@ def split_2(hidden, position_embeddings, position_ids, model, cache_b=None):
             past_key_values=cache_b,
             use_cache=True,
         )
-        if x.dim() == 2:
-            x = x.unsqueeze(0)
         print(f"  [split_2] layer0 returned type={type(x)}, len={len(x) if isinstance(x, tuple) else 'n/a'}")
         print(f"  [split_2] cache len AFTER layer0 = {cache_b.get_seq_length()}")
         print(f"  [split_2] layer0 keys is None? {cache_b.layers[0].keys is None if cache_b.layers else 'no layers'}")
