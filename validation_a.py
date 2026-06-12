@@ -104,6 +104,67 @@ def validate_layer_histories(full_history, split_history, cos_threshold=0.999, l
     print(f"\nOverall: {'ALL MATCH' if all_match else 'MISMATCH'}  ({len(common)} layer-passes compared)")
     print(f"{'='*74}\n")
     return all_match
+
+def print_timing_comparison(full_history, split_history, label=""):
+    """
+    For each pass, average the per-layer dur across all layers and compare
+    full-model vs split. Prefill (pass 0) is naturally slower — it processes
+    seq_len tokens. Decode passes (1+) process one token each and are the
+    meaningful steady-state comparison.
+    """
+    # group dur values by pass for each history
+    def group_by_pass(history):
+        passes = {}
+        for (p, l), v in history.items():
+            if isinstance(v, dict) and "dur" in v:
+                passes.setdefault(p, []).append(v["dur"])
+        return passes
+
+    full_by_pass  = group_by_pass(full_history)
+    split_by_pass = group_by_pass(split_history)
+    all_passes    = sorted(full_by_pass.keys() | split_by_pass.keys())
+
+    print(f"\n{'='*72}")
+    print(f"PER-PASS TIMING COMPARISON  {label}")
+    print(f"  dur = avg wall-clock seconds across all layers in that pass")
+    print(f"  pass 0 = prefill (seq_len tokens);  pass 1+ = decode (1 token each)")
+    print(f"{'='*72}")
+    print(f"{'Pass':<6} {'Type':<10} {'Full (s)':<12} {'Split (s)':<12} {'Speedup':>8}")
+    print(f"{'-'*72}")
+
+    prefill_full  = []
+    prefill_split = []
+    decode_full   = []
+    decode_split  = []
+
+    for p in all_passes:
+        f_durs = full_by_pass.get(p, [])
+        s_durs = split_by_pass.get(p, [])
+        f_avg  = sum(f_durs)  / len(f_durs)  if f_durs  else float("nan")
+        s_avg  = sum(s_durs)  / len(s_durs)  if s_durs  else float("nan")
+        speedup = f_avg / s_avg if s_avg > 0 else float("nan")
+        kind    = "prefill" if p == 0 else "decode"
+
+        print(f"{p:<6} {kind:<10} {f_avg:<12.4f} {s_avg:<12.4f} {speedup:>7.2f}x")
+
+        if p == 0:
+            prefill_full.append(f_avg);  prefill_split.append(s_avg)
+        else:
+            decode_full.append(f_avg);   decode_split.append(s_avg)
+
+    print(f"{'-'*72}")
+
+    # summary row for decode steady-state
+    if decode_full and decode_split:
+        df_avg = sum(decode_full)  / len(decode_full)
+        ds_avg = sum(decode_split) / len(decode_split)
+        print(f"{'avg':<6} {'decode':<10} {df_avg:<12.4f} {ds_avg:<12.4f} {df_avg/ds_avg:>7.2f}x")
+
+    if prefill_full and prefill_split:
+        pf = prefill_full[0]; ps = prefill_split[0]
+        print(f"{'0':<6} {'prefill':<10} {pf:<12.4f} {ps:<12.4f} {pf/ps:>7.2f}x  (single sample)")
+
+    print(f"{'='*72}\n")
  
  
 if __name__ == "__main__":
@@ -139,6 +200,7 @@ if __name__ == "__main__":
  
     # ---- Validate the grids against each other ----
     validate_layer_histories(full_history, split_history, label="MACHINE A")
+    print_timing_comparison(full_history, split_history, label="MACHINE A")
  
     # ---- Response comparison (the decode-path check) ----
     print(f"{'='*60}")
