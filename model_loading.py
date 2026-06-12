@@ -85,6 +85,8 @@ def setup_model_b(stopping_layer:int, model_path):
 
     kept_layers = model.model.layers[stopping_layer:]
     model.model.layers = nn.ModuleList(kept_layers)
+    for i, layer in enumerate(model.model.layers):
+        layer.self_attn.layer_idx = i
     
     #for i, layer in enumerate(model.model.layers):
         #print(i, layer.input_layernorm.weight.device)

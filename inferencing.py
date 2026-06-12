@@ -46,17 +46,11 @@ def split_2(hidden, position_embeddings, position_ids, model, cache_b=None):
     with torch.no_grad():
         x = hidden
 
-        past_len = cache_b.get_seq_length()
-        seq_len  = x.shape[1]
-        cache_position = torch.arange(past_len, past_len + seq_len, device=x.device)
-
         for i in range(len(model.model.layers)):
             x = model.model.layers[i](
-                x,
-                cache_position=cache_position,
-                position_embeddings=position_embeddings,
+                inputs_embeds=hidden,               # computes cache_position + RoPE itself
                 past_key_values=cache_b,
-                use_cache=True,
+            use_cache=True,
             )
             if x.dim() == 2:
                 x = x.unsqueeze(0)
@@ -64,7 +58,7 @@ def split_2(hidden, position_embeddings, position_ids, model, cache_b=None):
         print(f"  [split_2] cache len AFTER layer0 = {cache_b.get_seq_length()}")
         print(f"  [split_2] layer0 keys is None? {cache_b.layers[0].keys is None if cache_b.layers else 'no layers'}")
 
-        x = model.model.norm(x)
+        x = x.last_hidden_state
         logits = model.lm_head(x)
 
         # ---- Pick next token ----
