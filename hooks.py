@@ -57,5 +57,5 @@ def positional_hook(module, args, kwargs):
     cos, sin = kwargs.get("position_embeddings")
     handoff_package["position_embeddings"] = (cos.detach().clone(), sin.detach().clone())
     handoff_package["position_ids"] = kwargs.get("position_ids")
-    handoff_package["cache_a"] = kwargs.get("past_key_value")
+    handoff_package["cache_a"] = kwargs.get("past_key_values")
 
