@@ -22,6 +22,7 @@ DTYPE = torch.float16
 PROMPT             = ("hello world")
 TOKENS_TO_GENERATE = 30
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+DEBUG = True
 
 # ================================================================
 # NETWORK CONFIG 
