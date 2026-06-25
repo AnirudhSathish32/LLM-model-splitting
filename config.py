@@ -1,8 +1,41 @@
 import torch
 import os
+
+from dataclasses import dataclass, field
 from dotenv import load_dotenv
 
+
 load_dotenv()
+
+@dataclass
+class SharedConfig:
+
+    ### Model Config ###
+    model_name: str = field(init=False)
+    dtype: torch.dtype = torch.float16
+    pipeline: list = field(default_factory=list)
+
+    ### Generation Config ###
+    tokens_to_generate: int = 30
+    prompt: str = "hello world"
+    debug: bool = False
+    
+    ### Networking Config ###
+    tailscale_port = 65432
+
+@dataclass
+class LocalConfig:
+    device: str
+
+    ### Paths Config ###
+    model_path: str
+    layers_path: str
+    handoff_dir: str
+    received_dir: str
+
+
+
+
 
 # ================================================================
 # EVERYTHING BUT DEVICE, HANDOFF_DIR, LAYERS_DIR AND RECEIVED_DIR MUST BE SAME

@@ -1,15 +1,99 @@
 from transformers import DynamicCache, DynamicLayer
 import torch 
 import os
+from tailscale import (
+    get_my_ip
+)
 from config import (
     DEVICE,
     RECEIVED_DIR,
-    HANDOFF_DIR
+    HANDOFF_DIR,
+    SharedConfig,
+    LocalConfig
 )
 
 from hooks import (
     handoff_package
 )
+
+class InferencePeer:
+    def __init__(self, shared: SharedConfig, local: LocalConfig):
+        ### Shared Config Variable Init ###
+        
+        self.shared = shared
+        self.local = local
+        
+        my_ip = get_my_ip()
+        for i, entry in enumerate(shared.pipeline):
+            if entry["ip"] == my_ip:
+                my_assignment = entry
+                my_index = i
+                break
+        
+        if my_assignment is None:
+            raise ValueError(f"This machine ({my_ip}) is not in the pipeline")
+        
+        self.role = my_assignment["role"]
+        self.layer_start = my_assignment["layers"][0]
+        self.layer_end = my_assignment["layers"][1]
+        self.is_master = self.role == "master"
+        self.is_tail = self.role == "tail"
+
+        if my_index > 0:
+            self.upstream_ip = shared.pipeline[my_index - 1]["ip"]
+        else:
+            self.upstream_ip = None
+
+        if my_index < len(shared.pipeline) - 1:
+            self.downstream_ip = shared.pipeline[my_index + 1]
+        else:
+            None
+
+        ### Local Config Init ### 
+
+        self.device = local.device
+        self.layers_path = local.layers_path
+        self.model_path = local.model_path
+        self.handoff_dir = local.handoff_dir
+        self.received_dir = local.received_dir
+
+        ### Hook/Validation Init ###
+        ## per-SESSION state ##
+        self.caches = {}   # Keyed by session ID 
+        self.active_session = None
+
+        ## Per Turn state (Reset at the start of each generation)
+        self.handoff_package = {}
+        self.layer_history = {}
+        self.timing_starts = {}
+        self.pass_counter = {"i": 0}
+
+        ## Model Lifetime state
+        self.layer_hooks = {}
+        ### Direct Inferencing Init ###
+        
+        self.generated_token_ids = []
+
+    @property
+    def cache(self):
+        return self.caches.get(self.active_session)
+    
+    @cache.setter
+    def cache(self, value):
+        if self.active_session:
+            self.caches[self.active_session] = value
+    
+    def switch_session(self, session_id):
+        self.active_session = session_id
+        if session_id not in self.caches:
+            self.caches[session_id] = None
+    
+    def reset_turn_state(self):
+        self.handoff_package = {}
+        self.layer_history = {}
+        self.timing_starts = {}
+        self.pass_counter = {"i": 0}
+        self.generate_ids = []
 
 def load_handoff_package(save_dir=RECEIVED_DIR, first_pass=True):
     if first_pass:
@@ -31,7 +115,7 @@ def save_handoff_package(hidden, position_embeddings, position_ids, save_dir=HAN
     torch.save(position_ids, f"{save_dir}/position_ids.pt")
 
 
-def split_2(hidden, position_embeddings, position_ids, model, cache_b=None):
+def split_2(hidden, model, cache_b=None):
     """
     ---- Machine B ----
     Second Split 

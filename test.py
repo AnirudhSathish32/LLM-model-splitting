@@ -1,9 +1,9 @@
-import inspect
-from transformers.models.llama import modeling_llama
+from tailscale import (
+    get_my_ip,
+    get_status,
+    get_online_peers
+)
 
-# the attention module is what calls cache.update() — find its real signature + body
-print("=== Attention class ===")
-attn_cls = modeling_llama.LlamaAttention
-print(inspect.signature(attn_cls.forward))
-print("\n=== Attention forward source ===")
-print(inspect.getsource(attn_cls.forward))
+#print(get_status())
+print(get_my_ip())
+print(get_online_peers())
