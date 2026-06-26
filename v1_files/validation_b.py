@@ -4,8 +4,8 @@ import os
 import psutil
 import threading
  
-import machine_a
-import generation
+import v1_files.machine_b as machine_b
+import v1_files.generation as generation
 from config import (
     MODEL_PATH,
     STOPPING_LAYER,
@@ -49,7 +49,7 @@ class ResourceMonitor:
         return {"cpu_peak": max(cpus), "ram_peak_gb": max(rams), "gpu_peak_gb": max(gpus)}
  
  
-def validate_layer_histories(full_history, split_history, cos_threshold=0.999, label="MACHINE A"):
+def validate_layer_histories(full_history, split_history, cos_threshold=0.999, label="MACHINE B"):
     """
     Compare two (pass, layer) -> {"hidden": tensor} grids via cosine similarity.
     Both grids are keyed by GLOBAL layer index, so the full-model baseline and the
@@ -172,20 +172,22 @@ if __name__ == "__main__":
         print("WARNING: DEBUG=False — the split run only captures the boundary layer, so the "
               "validation grid will be nearly empty. Set DEBUG=True in config.py to validate.")
  
-    # ---- Split generation (Machine A side) ----
+    # ---- Split generation (Machine B side) ----
     print("\n[1] Running split generation...")
-    server_socket, conn = machine_a.setup_machine_a_conn()
-    model, inputs, tokenizer = machine_a.setup_model_a(STOPPING_LAYER, MODEL_PATH, PROMPT)
+    conn = machine_b.setup_machine_b_conn()
+    model, tokenizer = machine_b.setup_model_b(STOPPING_LAYER, MODEL_PATH)
  
     split_monitor = ResourceMonitor(); split_monitor.start()
     split_start = time.time()
-    split_response, split_history, split_ttft = machine_a.run_machine_a(
-        TOKENS_TO_GENERATE, STOPPING_LAYER, tokenizer, inputs, model, conn
+    split_response, split_history, split_ttft = machine_b.run_machine_b(
+        tokenizer, model, STOPPING_LAYER, TOKENS_TO_GENERATE, conn
     )
     split_time = time.time() - split_start
     split_monitor.stop(); split_stats = split_monitor.summary()
  
     # ---- Full generation (baseline) ----
+    # NOTE: this loads the FULL model on Machine B. If B is the weaker node this may not
+    # fit in memory — run validation primarily from Machine A in that case.
     print("\n[2] Running full generation...")
     full_monitor = ResourceMonitor(); full_monitor.start()
     full_start = time.time()
@@ -199,12 +201,12 @@ if __name__ == "__main__":
     full_ttft     = full_result["ttft"]
  
     # ---- Validate the grids against each other ----
-    validate_layer_histories(full_history, split_history, label="MACHINE A")
-    print_timing_comparison(full_history, split_history, label="MACHINE A")
+    validate_layer_histories(full_history, split_history, label="MACHINE B")
+    print_timing_comparison(full_history, split_history, label="MACHINE B")
  
     # ---- Response comparison (the decode-path check) ----
     print(f"{'='*60}")
-    print("RESPONSE COMPARISON: MACHINE A")
+    print("RESPONSE COMPARISON: MACHINE B")
     print(f"{'='*60}")
     print(f"MODEL: {os.path.basename(MODEL_PATH)}   |   PROMPT: {PROMPT}")
     print(f"Split ({len(model.model.layers)} layers held) response: {split_response}")
@@ -214,7 +216,7 @@ if __name__ == "__main__":
  
     # ---- Resource comparison ----
     print(f"\n{'='*60}")
-    print("RESOURCE COMPARISON: MACHINE A")
+    print("RESOURCE COMPARISON: MACHINE B")
     print(f"{'='*60}")
     print(f"{'Metric':<26}{'Full':<16}{'Split':<16}")
     print(f"{'-'*60}")
@@ -226,4 +228,3 @@ if __name__ == "__main__":
     print(f"{'='*60}")
  
     conn.close()
-    server_socket.close()

@@ -13,7 +13,7 @@ from config import (
     RECEIVED_DIR,
     DEBUG
 )
-from networking import (
+from v1_files.networking import (
 
     setup_machine_b_conn,
     receive_msg_file,
@@ -25,16 +25,16 @@ from networking import (
     receive_handoff
 )
 
-from inferencing import (
+from v1_files.inferencing import (
     load_handoff_package,
     split_2
 )
 
-from model_loading import (
+from v1_files.model_loading import (
     setup_model_b,
 )
 
-from hooks import (
+from v1_files.hooks import (
     make_layer_hook,
     layer_history,
     layer_hooks,

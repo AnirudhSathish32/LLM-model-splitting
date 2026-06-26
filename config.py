@@ -1,6 +1,6 @@
 import torch
 import os
-
+import json
 from dataclasses import dataclass, field
 from dotenv import load_dotenv
 
@@ -9,23 +9,18 @@ load_dotenv()
 
 @dataclass
 class SharedConfig:
+    debug: bool
+    port: int
+    initiator_ip: str
+    pipeline: list
 
-    ### Model Config ###
-    model_name: str = field(init=False)
-    dtype: torch.dtype = torch.float16
-    pipeline: list = field(default_factory=list)
 
-    ### Generation Config ###
-    tokens_to_generate: int = 30
-    prompt: str = "hello world"
-    debug: bool = False
-    
-    ### Networking Config ###
-    tailscale_port = 65432
 
 @dataclass
 class LocalConfig:
     device: str
+    debug: bool
+    tailscale_ip: str
 
     ### Paths Config ###
     model_path: str
@@ -33,6 +28,54 @@ class LocalConfig:
     handoff_dir: str
     received_dir: str
 
+    CONFIG_PATH = "./config/local_config.json"
+
+    def save(self, path=None):
+        """
+        persist current settings to disk
+        """
+        path = path or self.CONFIG_PATH
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        data = {
+            "device": self.device,
+            "layers_path": self.layers_path,
+            "model_path": self.model_path,
+            "debug": self.debug,
+            "tailscale_ip": self.tailscale_ip,
+        }
+        with open(path, "w") as f:
+            json.dump(data, f, indent=2)
+
+    @classmethod
+    def load(cls, path=None):
+        """
+        Load priority:
+          1. Saved file (user's UI choices)
+          2. Environment variables (CLI override)
+          3. Defaults (first run)
+        
+        Env vars override saved file when set, so a deployment
+        can force a setting regardless of what the UI saved.
+        """
+        path = path or cls.CONFIG_PATH
+        saved = {}
+        if os.path.exists(path):
+            with open(path) as f:
+                saved = json.load(f)
+
+        return cls(
+            device=os.getenv("DEVICE",
+                            saved.get("device",
+                                    "cuda" if torch.cuda.is_available() else "cpu")),
+            layers_dir=os.getenv("LAYERS_DIR",
+                                saved.get("layers_dir", "./layers")),
+            model_dir=os.getenv("MODEL_DIR",
+                                saved.get("model_dir", "./models")),
+            debug=os.getenv("DEBUG", str(saved.get("debug", False))).lower() == "true",
+            tailscale_ip=os.getenv("TAILSCALE_IP", saved.get("tailscale_ip", "")),
+        )
+
+                
 
 
 

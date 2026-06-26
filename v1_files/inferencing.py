@@ -12,7 +12,7 @@ from config import (
     LocalConfig
 )
 
-from hooks import (
+from v1_files.hooks import (
     handoff_package
 )
 
