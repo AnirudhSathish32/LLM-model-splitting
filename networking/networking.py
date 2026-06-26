@@ -25,22 +25,6 @@ from config import (
 def logging(msg):
     print(msg)
 
-
-# ================================================================
-# LOW LEVEL
-# ================================================================
-
-def from_bytes(payload):
-    return torch.load(io.BytesIO(payload), map_location=DEVICE)
-
-def to_bytes(obj):
-    buffer = io.BytesIO()
-    torch.save(obj, buffer)
-    return buffer.getvalue()
-
-
-
-
 # ================================================================
 # CONNECTION SETUP
 # ================================================================

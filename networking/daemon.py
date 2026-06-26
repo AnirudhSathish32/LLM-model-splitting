@@ -1,6 +1,16 @@
 import os, sys, json, socket, threading, time
 
-from config import LocalConfig, MSG_PROFILE
+from config import( 
+LocalConfig, 
+MSG_PROFILE, 
+MSG_PING, 
+MSG_BENCHMARK_REQ, 
+MSG_PONG,
+MSG_BENCHMARK_RESP,
+MSG_BENCHMARK_MISS
+)
+
+from protocol import read_message, read_TCP_data, send_message
 
 class Daemon:
 
@@ -58,3 +68,152 @@ class Daemon:
             print(f"[Daemon] Error handling {addr}: {e}")
         finally:
             conn.close()
+    
+    def _handle_ping(self, conn):
+        """Respond with availability + our IP."""
+        response = json.dumps({
+            "available": True,
+            "ip": self.local.tailscale_ip,
+        }).encode("utf-8")
+        send_message(conn, MSG_PONG, response)
+
+    def _handle_benchmark_request(self, conn, model_name):
+        """
+        Look up the local benchmark file for the requested model.
+        If it exists, send it. If not, respond with MISS so the
+        initiator knows this peer can't serve that model (yet).
+        """
+        benchmark_path = f"./benchmark/{model_name}.json"
+ 
+        if not os.path.exists(benchmark_path):
+            print(f"[Daemon] No benchmark for '{model_name}'")
+            send_message(conn, MSG_BENCHMARK_MISS, model_name.encode("utf-8"))
+            return
+ 
+        with open(benchmark_path) as f:
+            benchmark = json.load(f)
+ 
+        # attach our IP so the initiator knows who this came from
+        benchmark["ip"] = self.local.tailscale_ip
+ 
+        payload = json.dumps(benchmark).encode("utf-8")
+        send_message(conn, MSG_BENCHMARK_RESP, payload)
+        print(f"[Daemon] Sent benchmark for '{model_name}' to requester")
+
+
+# ================================================================
+
+# INITIATOR-SIDE: functions the initiating machine calls
+# to discover peers and collect benchmarks
+
+# ================================================================
+
+def ping_peer(ip, port=65433, timeout=5):
+    """
+    Ping a single peer's daemon. Returns availability dict or None
+    if unreachable.
+    """
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+        sock.connect((ip, port))
+        send_message(sock, MSG_PING)
+        msg_type, payload = read_message(sock)
+        sock.close()
+        if msg_type == MSG_PONG:
+            return json.loads(payload.decode("utf-8"))
+        return None
+    except (ConnectionRefusedError, TimeoutError, ConnectionError):
+        return None
+    
+def request_benchmark(ip, model_name, port=65433, timeout=10):
+    """
+    Request a specific model's benchmark from a single peer.
+    Returns the benchmark dict or None if the peer doesn't have it.
+    """
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+        sock.connect((ip, port))
+        send_message(sock, MSG_BENCHMARK_REQ, model_name.encode("utf-8"))
+        msg_type, payload = read_message(sock)
+        sock.close()
+
+        if msg_type == MSG_BENCHMARK_RESP:
+            return json.loads(payload.decode("utf-8"))
+        elif msg_type == MSG_BENCHMARK_MISS:
+            return None
+        return None
+    except (ConnectionRefusedError, TimeoutError, ConnectionError):
+        return None
+    
+def discover_and_collect(model_name, daemon_port=65433):
+    """
+    Full discovery + benchmark collection flow.
+    Called by the initiator when a query arrives.
+
+    1. Get all online peers from Tailscale
+    2. Ping each peer's daemon for availability
+    3. Request benchmarks from available peers
+    4. Return the list of benchmarks ready for build_pipeline()
+
+    Returns:
+        benchmarks: list of dicts with benchmark data + IP
+        unavailable: list of IPs that were online but had no benchmark
+    """
+    from tailscale import get_online_peers, get_my_ip
+
+    my_ip = get_my_ip()
+    peers = get_online_peers()
+
+    print(f"\n[Discovery] Found {len(peers)} peers on tailnet")
+
+    available = []
+    for peer in peers:
+        ip = peer["ip"]
+        if ip == my_ip:
+            continue    # don't ping ourselves
+
+        pong = ping_peer(ip, port=daemon_port)
+        if pong and pong.get("available"):
+            available.append(ip)
+            print(f"  {ip} ({peer.get('hostname', '?')}): available")
+        else:
+            print(f"  {ip} ({peer.get('hostname', '?')}): unavailable")
+
+    print(f"\n[Discovery] {len(available)} peers available, requesting benchmarks...")
+    benchmarks = []
+    unavailable = []
+    for ip in available:
+        bench = request_benchmark(ip, model_name, port=daemon_port)
+        if bench:
+            benchmarks.append(bench)
+            print(f"  {ip}: benchmark received "
+                  f"({bench.get('layer_time_s', 0)*1000:.2f} ms/layer, "
+                  f"{bench.get('gpu_name') or 'CPU'})")
+        else:
+            unavailable.append(ip)
+            print(f"  {ip}: no benchmark for '{model_name}'")
+ 
+    # also include our own benchmark if we have one
+    from benchmark import load_benchmark
+    my_bench = load_benchmark(model_name)
+    if my_bench:
+        my_bench["ip"] = my_ip
+        benchmarks.append(my_bench)
+        print(f"  {my_ip} (self): benchmark loaded locally")
+ 
+    print(f"\n[Discovery] Collected {len(benchmarks)} benchmarks, "
+          f"{len(unavailable)} peers missing benchmark")
+ 
+    return benchmarks, unavailable
+
+if __name__ == "__main__":
+    local = LocalConfig.load()
+ 
+    if not local.tailscale_ip:
+        print("ERROR: tailscale_ip not set. Run LocalConfig setup or set TAILSCALE_IP env var.")
+        sys.exit(1)
+ 
+    daemon = Daemon(local_config=local)
+    daemon.start()

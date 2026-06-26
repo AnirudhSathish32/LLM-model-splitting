@@ -1,5 +1,12 @@
+"""
+Protocol for overall networking 
+1 Length Message, 8 byte length of payload, payload
 
+Protocol for serialization of bytes
 
+"""
+
+import torch, io
 
 def logging(msg):
     print(msg)
@@ -40,3 +47,11 @@ def read_TCP_data(conn, length):
         data += packet
         # add packet binaries to data
     return data
+
+def from_bytes(payload):
+    return torch.load(io.BytesIO(payload), map_location=DEVICE)
+
+def to_bytes(obj):
+    buffer = io.BytesIO()
+    torch.save(obj, buffer)
+    return buffer.getvalue()
