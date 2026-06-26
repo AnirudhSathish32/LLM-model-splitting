@@ -18,7 +18,7 @@ from config import (
     HANDOFF_DIR
 )
 
-from v1_files.networking import (
+from networking.networking import (
     setup_machine_a_conn,
     read_message,
     send_handoff,

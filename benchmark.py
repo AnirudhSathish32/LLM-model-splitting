@@ -5,6 +5,10 @@ from safetensors.torch import load_file
 from config import LocalConfig, LAYERS_DIR, MODEL_PATH, DTYPE, DEVICE
 
 def benchmark_single_layer(model_path, layers_dir, device, dtype, warmup=3, trials=10):
+    """
+    Benchmarking for llama-3B and llama-8B
+    """
+    
     print(f"Benchmarking on device: {device}, dtype: {dtype}")
     print(f"Model: {model_path}")
  

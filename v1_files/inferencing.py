@@ -1,7 +1,7 @@
 from transformers import DynamicCache, DynamicLayer
 import torch 
 import os
-from tailscale import (
+from networking.tailscale import (
     get_my_ip
 )
 from config import (

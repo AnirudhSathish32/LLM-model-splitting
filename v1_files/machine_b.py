@@ -13,7 +13,7 @@ from config import (
     RECEIVED_DIR,
     DEBUG
 )
-from v1_files.networking import (
+from networking.networking import (
 
     setup_machine_b_conn,
     receive_msg_file,
