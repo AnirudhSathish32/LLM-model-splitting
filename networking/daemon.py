@@ -1,16 +1,29 @@
-import os, sys, json, socket, threading, time
+import os, sys, json, socket, threading, time, torch, io
 
-from config import( 
+from config import(
+SharedConfig, 
 LocalConfig, 
 MSG_PROFILE, 
 MSG_PING, 
 MSG_BENCHMARK_REQ, 
 MSG_PONG,
 MSG_BENCHMARK_RESP,
-MSG_BENCHMARK_MISS
+MSG_BENCHMARK_MISS,
+MSG_CONFIG,
+MSG_READY,
+MSG_START
 )
 
-from protocol import read_message, read_TCP_data, send_message
+from query import(
+    Query
+)
+
+from networking.protocol import read_message, read_TCP_data, send_message
+from networking.tailscale import get_online_peers, get_my_ip
+from benchmark import load_benchmark
+from networking.serialization import from_bytes, to_bytes
+from inference_peer import InferencePeer
+
 
 class Daemon:
 
@@ -18,6 +31,8 @@ class Daemon:
         self.local = local_config or LocalConfig.load()
         self.port = port
         self.running = False
+        self.peer_lock = threading.Lock()
+        self.peer = None
 
     def start(self):
         """Bind and listen. Blocks forever."""
@@ -58,6 +73,9 @@ class Daemon:
             elif msg_type == MSG_BENCHMARK_REQ:
                 model_name = payload.decode("utf-8")
                 self._handle_benchmark_request(conn, model_name)
+
+            elif msg_type == MSG_CONFIG:
+                self._handle_config_query(conn, payload)
  
             else:
                 print(f"[Daemon] Unknown message type {msg_type} from {addr}")
@@ -99,6 +117,57 @@ class Daemon:
         payload = json.dumps(benchmark).encode("utf-8")
         send_message(conn, MSG_BENCHMARK_RESP, payload)
         print(f"[Daemon] Sent benchmark for '{model_name}' to requester")
+
+
+    def _handle_config_query(self, conn, payload):
+        bundle = torch.load(io.BytesIO(payload), weights_only=False)
+        shared = from_bytes(SharedConfig, bundle["shared"])
+        query = from_bytes(Query, bundle["query"])
+
+        # find our assignment
+        my_ip = self.local.tailscale_ip
+        my_entry = next(
+            (e for e in shared.pipeline if e["ip"] == my_ip),
+            None,
+        )
+
+        if my_entry is None:
+            print(f"[Daemon] WARNING: {my_ip} not in pipeline")
+            return
+
+        print(f"[Daemon] Role: {my_entry['role']}, "
+            f"layers: {my_entry['layers'][0]}..{my_entry['layers'][1]}, "
+            f"model: {query.model_name}")
+
+        # tear down existing peer if one is running
+        with self.peer_lock:
+            if self.peer is not None:
+                self.peer.cleanup()
+                self.peer = None
+
+        # create peer, load model, connect to neighbors
+        peer = InferencePeer(shared, self.local)
+        peer.load_query_into_model(query)
+        
+        with self.peer_lock:
+            self.peer = peer
+
+        # Phase 2: report ready, wait for all peers to synchronize
+        send_message(conn, MSG_READY)
+        print(f"[Daemon] Model loaded — waiting for start signal")
+
+        msg_type, _ = read_message(conn)
+        if msg_type != MSG_START:
+            print(f"[Daemon] Expected MSG_START, got {msg_type}")
+            return
+
+        # Phase 3: everyone is ready — connect to chain neighbors and infer
+        print(f"[Daemon] Start signal received")
+        peer.connect()
+
+        peer.run_generation()
+
+
 
 
 # ================================================================
@@ -161,8 +230,7 @@ def discover_and_collect(model_name, daemon_port=65433):
         benchmarks: list of dicts with benchmark data + IP
         unavailable: list of IPs that were online but had no benchmark
     """
-    from tailscale import get_online_peers, get_my_ip
-
+    
     my_ip = get_my_ip()
     peers = get_online_peers()
 
@@ -196,7 +264,7 @@ def discover_and_collect(model_name, daemon_port=65433):
             print(f"  {ip}: no benchmark for '{model_name}'")
  
     # also include our own benchmark if we have one
-    from benchmark import load_benchmark
+    
     my_bench = load_benchmark(model_name)
     if my_bench:
         my_bench["ip"] = my_ip

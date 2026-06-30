@@ -25,7 +25,7 @@ from networking.networking import (
     receive_handoff
 )
 
-from v1_files.inferencing import (
+from inference_peer import (
     load_handoff_package,
     split_2
 )

@@ -4,7 +4,6 @@ import json
 from dataclasses import dataclass, field
 from dotenv import load_dotenv
 
-
 load_dotenv()
 
 @dataclass
@@ -13,8 +12,6 @@ class SharedConfig:
     port: int
     initiator_ip: str
     pipeline: list
-
-
 
 @dataclass
 class LocalConfig:
@@ -67,38 +64,13 @@ class LocalConfig:
             device=os.getenv("DEVICE",
                             saved.get("device",
                                     "cuda" if torch.cuda.is_available() else "cpu")),
-            layers_dir=os.getenv("LAYERS_DIR",
-                                saved.get("layers_dir", "./layers")),
-            model_dir=os.getenv("MODEL_DIR",
-                                saved.get("model_dir", "./models")),
+            layers_dir=os.getenv("LAYERS_PATH",
+                                saved.get("layers_path", "./layers")),
+            model_dir=os.getenv("MODEL_PATH",
+                                saved.get("model_path", "./models")),
             debug=os.getenv("DEBUG", str(saved.get("debug", False))).lower() == "true",
             tailscale_ip=os.getenv("TAILSCALE_IP", saved.get("tailscale_ip", "")),
-        )
-
-                
-
-
-
-
-# ================================================================
-# EVERYTHING BUT DEVICE, HANDOFF_DIR, LAYERS_DIR AND RECEIVED_DIR MUST BE SAME
-# ACROSS MACHINE_A AND MACHINE_B
-# ================================================================
-
-# ================================================================
-# MODEL CONFIG
-# ================================================================
-MODEL_PATH     = "./llama-3b"
-STOPPING_LAYER = 15
-DTYPE = torch.float16
-
-# ================================================================
-# GENERATION CONFIG
-# ================================================================
-PROMPT             = ("hello world")
-TOKENS_TO_GENERATE = 30
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-DEBUG = True
+        )     
 
 # ================================================================
 # NETWORK CONFIG 
@@ -118,13 +90,10 @@ MSG_BENCHMARK_REQ = 10
 MSG_PONG       = 11
 MSG_BENCHMARK_MISS = 12
 MSG_BENCHMARK_RESP = 13
+MSG_CONFIG = 14
+MSG_READY = 15
+MSG_START = 16
+MSG_RESPONSE = 17
 
 ANIRUDH_MACHINE_A = "100.74.100.92"
 PRANATHI_MACHINE_A = ""
-
-# ================================================================
-# PATHS
-# ================================================================
-HANDOFF_DIR  = "./handoff"
-RECEIVED_DIR = "./received"
-LAYERS_DIR   = f"./layers/{os.path.basename(MODEL_PATH)}"

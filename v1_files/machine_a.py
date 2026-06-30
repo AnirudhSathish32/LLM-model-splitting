@@ -29,7 +29,7 @@ from networking.networking import (
     receive_response
 )
 
-from v1_files.inferencing import (
+from inference_peer import (
     save_handoff_package,
     split_1
 )

@@ -48,10 +48,4 @@ def read_TCP_data(conn, length):
         # add packet binaries to data
     return data
 
-def from_bytes(payload):
-    return torch.load(io.BytesIO(payload), map_location=DEVICE)
 
-def to_bytes(obj):
-    buffer = io.BytesIO()
-    torch.save(obj, buffer)
-    return buffer.getvalue()
