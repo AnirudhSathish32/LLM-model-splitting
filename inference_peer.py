@@ -8,9 +8,13 @@ import socket
 from networking.tailscale import (
     get_my_ip
 )
+
+import struct
 from networking.serialization import (
     tensor_to_bytes,
     tensor_from_bytes,
+    to_bytes,
+    from_bytes
 )
 
 from networking.protocol import (
@@ -23,6 +27,11 @@ from config import (
     HANDOFF_DIR,
     MSG_FIRST_PASS,
     MSG_NEXT_PASS,
+    MSG_STOP,
+    MSG_LAYER,
+    MSG_EOS,
+    MSG_TTFT,
+    MSG_TOKEN,
     SharedConfig,
     LocalConfig
 )
@@ -167,6 +176,52 @@ class InferencePeer:
         _, payload = read_message(self.upstream_conn)
         return tensor_from_bytes(payload, device=self.model.device)
     
+    def send_stop(conn): 
+        send_message(conn, MSG_STOP)
+
+    def send_ttft(conn, ttft): 
+        """
+        Send Time-To-First-Token as an 8-byte float
+        """
+        send_message(conn, MSG_TTFT, struct.pack(">d", ttft))
+        logging(f"sent TTFT: {ttft:.4f}s")
+
+    def receive_ttft(conn):
+        """
+        Receive TTFT from Machine A
+        """
+
+        _, payload = read_message(conn, expect=MSG_TTFT)
+        ttft = struct.unpack(">d", payload)[0]
+        logging(f"received TTFT: {ttft:.4f}s")
+
+    def send_token(conn, token):
+        send_message(conn, MSG_TOKEN, to_bytes(token))
+
+    def send_eos(conn):
+        send_message(conn, MSG_EOS)
+
+    def receive_response(conn):
+        msg_type, payload = read_message(conn)
+        if msg_type == MSG_EOS:
+            return "eos", None
+        if msg_type == MSG_TOKEN:
+            return "token", from_bytes(payload)
+        raise ValueError(f"Unexpected msg {msg_type}")
+
+    # ================================================================
+    # LAYER OUTPUT EXCHANGE
+    # ================================================================
+
+
+    def send_layers(conn, layers): 
+        send_message(conn, MSG_LAYER, to_bytes(layers))
+        
+
+    def receive_layers(conn):
+        _, payload = read_message(conn, expect=MSG_LAYER)
+        return from_bytes(payload)
+    
     def run_generation(self, query):
         if self.is_master:
             return self.run_master_generation(query)
@@ -295,3 +350,6 @@ def save_handoff_package(hidden, position_embeddings, position_ids, save_dir=HAN
     torch.save(position_embeddings[0], f"{save_dir}/cos.pt")
     torch.save(position_embeddings[1], f"{save_dir}/sin.pt")
     torch.save(position_ids, f"{save_dir}/position_ids.pt")
+
+def logging(msg):
+    print(msg)

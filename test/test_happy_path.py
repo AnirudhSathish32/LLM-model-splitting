@@ -151,9 +151,9 @@ def test_happy_path():
     print("\nLoading models...")
     t0 = time.time()
 
-    master_peer.load_query(query)
-    worker_peer.load_query(query)
-    tail_peer.load_query(query)
+    master_peer.load_query_into_model(query)
+    worker_peer.load_query_into_model(query)
+    tail_peer.load_query_into_model(query)
 
     print(f"All models loaded in {time.time() - t0:.1f}s")
 
