@@ -1,5 +1,6 @@
 from transformers import DynamicCache, DynamicLayer
 import torch 
+import time
 import os
 from query import Query
 from model import Model
@@ -20,6 +21,8 @@ from config import (
     DEVICE,
     RECEIVED_DIR,
     HANDOFF_DIR,
+    MSG_FIRST_PASS,
+    MSG_NEXT_PASS,
     SharedConfig,
     LocalConfig
 )
@@ -177,7 +180,7 @@ class InferencePeer:
 
         # get cache for session
         cache = self.get_cache(query.session_id, query.loaded_model_name)
-        full_sequence_ids = self.model.tokenize(session.messages).to(self.model.device)
+        full_sequence_ids = self.model.tokenize(query.session.messages).to(self.model.device)
         first_pass = True
         token_count = 0
         ttft_start = time.perf_counter()

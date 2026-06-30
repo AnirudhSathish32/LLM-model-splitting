@@ -20,7 +20,7 @@ import torch
 from config import SharedConfig, LocalConfig
 from query import Query
 from inference_peer import InferencePeer
-from protocol import send_message, read_message
+from networking.protocol import send_message, read_message
 
 
 # ═══════════════════════════════════════════════════════════════
