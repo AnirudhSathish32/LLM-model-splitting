@@ -5,8 +5,8 @@ import threading
 
 from hardware import build_pipeline
 from config import SharedConfig, LocalConfig, MSG_CONFIG, MSG_READY, MSG_START, MSG_RESPONSE
-from protocol import send_message, read_message
-from serialization import to_bytes, serialize_config_query
+from networking.protocol import send_message, read_message
+from networking.serialization import to_bytes, serialize_config_query
 
 
 @dataclass
@@ -37,7 +37,7 @@ def send_query(query, local: LocalConfig, session_manager, daemon_port=65433):
     5. Receive the response from the tail
     6. Update the session and return the response
     """
-    from daemon import discover_and_collect
+    from networking.daemon import discover_and_collect
 
     session = session_manager.get_or_create(query.session_id)
     session.add_user_message(query.prompt)

@@ -4,7 +4,7 @@ from config import (
     SharedConfig, LocalConfig,
     MSG_PING, MSG_PONG,
     MSG_BENCHMARK_REQ, MSG_BENCHMARK_RESP, MSG_BENCHMARK_MISS,
-    MSG_CONFIG, MSG_READY, MSG_START,
+    MSG_CONFIG, MSG_READY, MSG_START, MSG_RESPONSE
 )
 from protocol import read_message, send_message
 from tailscale import get_online_peers, get_my_ip
@@ -102,6 +102,7 @@ class Daemon:
     def _handle_config_query(self, conn, payload):
         """Receive SharedConfig + Query, create InferencePeer, run generation."""
         from user_query import UserQuery
+        from session import Session
 
         bundle = torch.load(io.BytesIO(payload), map_location="cpu", weights_only=False)
         shared = from_bytes(SharedConfig, bundle["shared"])
@@ -147,6 +148,21 @@ class Daemon:
         # Phase 3: connect to chain neighbors and run inference
         print(f"[Daemon] Start signal received — connecting chain")
         peer.connect()
+
+        if self.is_master:
+            # Master needs a session to tokenize the conversation
+            session = Session(session_id=query.session_id)
+            session.add_user_message(query.prompt)
+ 
+            response = peer.run_generation(query=query, session=session)
+ 
+            # Send response back to the initiator on the control connection
+            print(f"[Daemon] Generation complete — sending response ({len(response)} chars)")
+            send_message(conn, MSG_RESPONSE, response.encode("utf-8"))
+        else:
+            # Worker/tail — just run, no response to send
+            peer.run_generation(query=query)
+
         peer.run_generation(query)
 
 

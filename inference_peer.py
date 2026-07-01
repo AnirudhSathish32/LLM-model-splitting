@@ -132,6 +132,7 @@ class InferencePeer:
         Retry loop with exponential backoff handles startup race conditions.
         SO_REUSEADDR on all server sockets to avoid TIME_WAIT port locks.
         """
+        
         port = self.shared.port  # 65432
 
         if self.is_master:
@@ -141,7 +142,7 @@ class InferencePeer:
             print(f"[Peer] Master: downstream connected")
 
             # For the reverse channel, use port+1 so it doesn't clash
-            self.upstream_conn = self._listen_accept(port + 1)
+            self.upstream_conn = self._listen_accept(port + 10)
             print(f"[Peer] Master: upstream (token return) connected")
 
         elif self.is_tail:
@@ -263,12 +264,13 @@ class InferencePeer:
     def run_master_generation(self, query, session=None):
         """
         Master loop:
-        1. Tokenize prompt → input_ids
-        2. Forward through master layers (StopIteration captures hidden)
-        3. Send hidden downstream
-        4. Receive token from upstream (tail → master circular path)
-        5. Append token, repeat until EOS or max tokens
-        6. On EOS: send MSG_STOP downstream to unblock workers
+        1. Tokenize full conversation → input_ids
+        2. If cache is warm, skip tokens already in cache (feed only new ones)
+        3. Forward through master layers (StopIteration captures hidden)
+        4. Send hidden downstream
+        5. Receive token from upstream (tail → master circular path)
+        6. Append token, repeat until EOS or max tokens
+        7. On EOS: send MSG_STOP downstream to unblock workers
         """
         cache = self._get_cache()
 
@@ -279,6 +281,25 @@ class InferencePeer:
             messages = [{"role": "user", "content": query.prompt}]
 
         full_sequence_ids = self.model.tokenize(messages).to(self.model.device)
+
+        # ── Warm cache: skip tokens the cache already covers ──
+        cache_len = cache.get_seq_length() if cache is not None else 0
+        total_len = full_sequence_ids.shape[1]
+
+        if cache_len > 0 and cache_len < total_len:
+            # Resume — only prefill the new tokens
+            first_pass_input = full_sequence_ids[:, cache_len:]
+            print(f"[Master] Warm cache: {cache_len} cached, "
+                  f"{total_len - cache_len} new tokens to prefill")
+        elif cache_len >= total_len and cache_len > 0:
+            # Cache covers everything or more — shouldn't happen, invalidate
+            print(f"[Master] Cache invalidated: cache_len={cache_len} >= input_len={total_len}")
+            cache = None
+            first_pass_input = full_sequence_ids
+        else:
+            # Cold start
+            first_pass_input = full_sequence_ids
+
         first_pass = True
         token_count = 0
         ttft_start = time.perf_counter()
@@ -286,7 +307,11 @@ class InferencePeer:
 
         while token_count < query.tokens_to_generate:
             self.model.pass_counter["i"] = token_count
-            model_input = full_sequence_ids if first_pass else full_sequence_ids[:, -1:]
+
+            if first_pass:
+                model_input = first_pass_input
+            else:
+                model_input = full_sequence_ids[:, -1:]
 
             hidden, cache = self.model.forward(model_input, cache)
 

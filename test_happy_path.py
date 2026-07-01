@@ -72,7 +72,7 @@ def make_connection_pair():
 # ═══════════════════════════════════════════════════════════════
 
 def test_happy_path():
-    model_name = "llama-3b"
+    model_name = "llama-8b"
     prompt = "hello there"
     tokens = 10
 
@@ -80,13 +80,14 @@ def test_happy_path():
         device="cuda" if torch.cuda.is_available() else "cpu",
         debug=False,
         tailscale_ip="100.74.100.92",
-        model_path="./",         # model at ./<model_name>/
+        model_path="./models",         # model at ./<model_name>/
         layers_path="./layers",  # layers at ./layers/<model_name>/
     )
 
     # ── Build a 3-node pipeline manually ─────────────────
     from transformers import AutoConfig
-    model_dir = f"./{model_name}"
+    import os
+    model_dir = os.path.join(local.model_path, model_name)
     config = AutoConfig.from_pretrained(model_dir)
     total_layers = config.num_hidden_layers
 
