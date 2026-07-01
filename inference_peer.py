@@ -280,7 +280,9 @@ class InferencePeer:
         else:
             messages = [{"role": "user", "content": query.prompt}]
 
+        print("[Master] Attempting to Tokenize")
         full_sequence_ids = self.model.tokenize(messages).to(self.model.device)
+        print("[Master] Tokenize succeessfuly")
 
         # ── Warm cache: skip tokens the cache already covers ──
         cache_len = cache.get_seq_length() if cache is not None else 0
