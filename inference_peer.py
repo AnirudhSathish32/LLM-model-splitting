@@ -305,6 +305,9 @@ class InferencePeer:
         ttft_start = time.perf_counter()
         ttft = None
 
+        print(f"[Master] Starting generation loop — max {query.tokens_to_generate} tokens, "
+              f"input shape: {full_sequence_ids.shape}")
+
         while token_count < query.tokens_to_generate:
             self.model.pass_counter["i"] = token_count
 
@@ -313,24 +316,33 @@ class InferencePeer:
             else:
                 model_input = full_sequence_ids[:, -1:]
 
+            print(f"[Master] Token {token_count}: forward (input shape {model_input.shape})...")
             hidden, cache = self.model.forward(model_input, cache)
+            print(f"[Master] Token {token_count}: forward done, hidden shape {hidden.shape}")
 
             msg_type = MSG_FIRST_PASS if first_pass else MSG_NEXT_PASS
+            print(f"[Master] Token {token_count}: sending hidden to tail...")
             self.send_hidden(hidden, msg_type)
             first_pass = False
+            print(f"[Master] Token {token_count}: hidden sent, waiting for token from tail...")
 
             # receive token from tail (via circular upstream connection)
             msg_string, token = self.receive_token()
+            print(f"[Master] Token {token_count}: received '{msg_string}' from tail")
 
             if ttft is None:
                 ttft = time.perf_counter() - ttft_start
 
             if msg_string == "eos":
                 # propagate stop down the chain so workers unblock
+                print(f"[Master] EOS received — sending stop downstream")
                 self.send_stop()
                 break
 
             self.model.generated_ids.append(token.item())
+            decoded_so_far = self.model.decode(self.model.generated_ids)
+            print(f"[Master] Token {token_count}: id={token.item()}, "
+                  f"text so far: '{decoded_so_far}'")
             full_sequence_ids = torch.cat(
                 [full_sequence_ids, token.unsqueeze(0).to(full_sequence_ids.device)],
                 dim=-1,
@@ -339,10 +351,12 @@ class InferencePeer:
 
         # If we hit max tokens without EOS, still stop the pipeline
         if token_count >= query.tokens_to_generate:
+            print(f"[Master] Max tokens reached — sending stop downstream")
             self.send_stop()
 
         self._set_cache(cache)
         response = self.model.decode(self.model.generated_ids)
+        print(f"[Master] Generation complete — {token_count} tokens")
 
         if ttft is not None:
             print(f"[Master] TTFT: {ttft*1000:.1f}ms, "
@@ -389,16 +403,21 @@ class InferencePeer:
         token_count = 0
         max_tokens = query.tokens_to_generate if query else 256
 
+        print(f"[Tail] Starting generation loop — max {max_tokens} tokens")
+
         while True:
             msg_type, hidden = self.receive_hidden()
 
             if msg_type == MSG_STOP:
+                print(f"[Tail] Received MSG_STOP — breaking")
                 break
 
             hidden = hidden.to(self.model.device)
+            print(f"[Tail] Token {token_count}: received hidden shape {hidden.shape}, forwarding...")
             self.model.pass_counter["i"] = token_count
 
             token, cache = self.model.forward(hidden, cache)
+            print(f"[Tail] Token {token_count}: forward done, token_id={token.item()}")
 
             # check EOS
             eos_ids = self.model.tokenizer.eos_token_id
@@ -406,18 +425,23 @@ class InferencePeer:
                 eos_ids = [eos_ids]
 
             if token.item() in eos_ids:
+                print(f"[Tail] EOS token detected — sending EOS to master")
                 self.send_eos()
                 break
 
             self.model.generated_ids.append(token.item())
+            print(f"[Tail] Token {token_count}: sending token to master...")
             self.send_token(token)
+            print(f"[Tail] Token {token_count}: token sent")
             token_count += 1
 
             if token_count >= max_tokens:
+                print(f"[Tail] Max tokens reached — sending EOS to master")
                 self.send_eos()
                 break
 
         self._set_cache(cache)
+        print(f"[Tail] Generation complete — {token_count} tokens")
 
     # ================================================================
     # CLEANUP
