@@ -73,7 +73,7 @@ def make_connection_pair():
 
 def test_happy_path():
     model_name = "llama-8b"
-    prompt = "hello there"
+    prompt = "What is a Falafel"
     tokens = 10
 
     local = LocalConfig(

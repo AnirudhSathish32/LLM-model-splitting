@@ -30,6 +30,9 @@ class Daemon:
         server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         server.bind(("0.0.0.0", self.port))
         server.listen(5)
+
+        server.settimeout(1.0)
+
         self.running = True
 
         print(f"[Daemon] Listening on port {self.port}")
@@ -39,15 +42,20 @@ class Daemon:
 
         try:
             while self.running:
-                conn, addr = server.accept()
-                thread = threading.Thread(
-                    target=self._handle_connection,
-                    args=(conn, addr),
-                    daemon=True,
-                )
-                thread.start()
+                try:
+                    conn, addr = server.accept()
+                    conn.settimeout(None)
+                    thread = threading.Thread(
+                        target=self._handle_connection,
+                        args=(conn, addr),
+                        daemon=True,
+                    )
+                    thread.start()
+                except TimeoutError:
+                    continue
         except KeyboardInterrupt:
-            print("\n[Daemon] Shutting down")
+            print("\n[Daemon] KeyboardInterrupt detected. Shutting down...")
+            self.running = False
         finally:
             server.close()
 
