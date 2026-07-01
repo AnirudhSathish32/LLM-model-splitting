@@ -7,6 +7,7 @@ import time
 import torch
 import gc
 
+
 class Model:
     def __init__(self, model_name, role, layer_start, layer_end, local_config, dtype):
         self.model_name  = model_name
@@ -17,15 +18,14 @@ class Model:
         self.layer_end   = layer_end
         self.device      = local_config.device
         self.dtype       = dtype
-        self.model_path   = local_config.model_path
-        self.layers_path  = local_config.layers_path
-        self.cache = None
+        self.model_path  = local_config.model_path
+        self.layers_path = local_config.layers_path
 
         self.model     = None
         self.tokenizer = None
         self.config    = None
 
-        # per-turn state
+        # per-turn state (reset between generation calls)
         self.handoff_package = {}
         self.layer_history   = {}
         self.timing_starts   = {}
@@ -33,241 +33,111 @@ class Model:
         self.layer_hooks     = {}
         self.generated_ids   = []
 
-    def reset_turn_state(self):
-        self.handoff_package = {}
-        self.layer_history = {}
-        self.timing_starts = {}
-        self.pass_counter = {"i": 0}
-        self.generated_ids = []
+    # ================================================================
+    # LIFECYCLE
+    # ================================================================
 
-    def split_tail(self, hidden, model, cache_tail=None):
+    def load(self):
         """
-        ---- Machine B ----
-        Second Split 
+        Single entry point for loading the model slice.
+
+        Master:  embed_tokens + layers 0..layer_end.
+                 Config is patched to num_hidden_layers = layer_end + 1
+                 so the model is created with exactly the right count.
+                 No slicing needed. Tokenizer loaded.
+
+        Worker:  layers layer_start..layer_end only.
+                 Full config skeleton, then slice + re-index.
+                 model.model.norm replaced with Identity (only tail norms).
+
+        Tail:    layers layer_start..layer_end + norm + lm_head.
+                 Slice + re-index. Tokenizer loaded.
         """
-    
-        if cache_tail is None:
-            cache_tail = DynamicCache()
-            #for _ in range(len(model.model.layers)):
-            #   cache_b.layers.append(DynamicLayer())
-            print(f"  [split_2] fresh cache, type={type(cache_tail)}, has get_seq_length={hasattr(cache_tail, 'get_seq_length')}")
-
-        with torch.no_grad():
-            x =  model.model(
-                inputs_embeds=hidden,
-                past_key_values=cache_tail,
-                use_cache=True,
-            )
-            print(f"  [split_tail] layer0 returned type={type(x)}, len={len(x) if isinstance(x, tuple) else 'n/a'}")
-            print(f"  [split_tail] cache len AFTER layer0 = {cache_tail.get_seq_length()}")
-            print(f"  [split_tail] layer0 keys is None? {cache_tail.layers[0].keys is None if cache_tail.layers else 'no layers'}")
-
-            x = x.last_hidden_state
-            logits = model.lm_head(x)
-
-            # ---- Pick next token ----
-            next_token_id = torch.argmax(logits[:, -1, :], dim=-1)
-
-        return  next_token_id, cache_tail
-
-    def split_master(self, current_input_ids, model, cache_master=None):
-        """
-        ---- Machine A ----
-        First Split
-
-        """
-        try:
-            with torch.no_grad():
-                model(input_ids=current_input_ids,
-                    past_key_values=cache_master,
-                    use_cache=True,
-                    return_dict=True
-                    )
-        except StopIteration:
-            pass
-        hidden = self.handoff_package["hidden"]
-        position_embeddings = self.handoff_package["position_embeddings"]
-        position_ids = self.handoff_package["position_ids"]
-        cache_master = self.handoff_package["cache_master"]
-
-        return hidden, position_embeddings, position_ids, cache_master
-    
-    def make_layer_hook(self, boundary, pass_counter, global_idx):
-        """
-        Single unified forward hook for each layer.
-
-        Behavior depends on position:
-        - Every layer: capture hidden state for validation 
-        - Boundary layer (stopping_layer - 1): also save handoff hidden + raise StopIteration
-
-        idx               : this layer's index
-        stopping_layer    : the split boundary
-        capture_validation: whether to record validation data (first pass only)
-        """
-        
-        is_boundary = global_idx == boundary
-        
-
-        def timer_start(module, args, kwargs):
-            key = (pass_counter["i"], global_idx)
-            self.timing_starts[key] = time.perf_counter()
-
-
-        def hidden_hook(module, input, output):
-            key = (pass_counter["i"], global_idx)
-            t0 = self.timing_starts.get(key)
-            
-            if t0 is not None:
-                dur = time.perf_counter() - t0
-            else:
-                dur = 0.0 
-            
-            hidden = output[0].detach()
-            if hidden.dim() == 2:
-                hidden = hidden.unsqueeze(0)
-
-            # Validation capture — every layer
-            self.layer_history[key] = {
-                "hidden": hidden,
-                "dur": dur,
-            }
-
-            # Boundary layer — this is the handoff point
-            if is_boundary:
-                self.handoff_package["hidden"] = hidden
-                raise StopIteration   # halt forward pass — Machine A is done
-
-        return timer_start, hidden_hook
-    
-    """
-    def positional_hook(module, args, kwargs):
-        cos, sin = kwargs.get("position_embeddings")
-        self.handoff_package["position_embeddings"] = (cos.detach().clone(), sin.detach().clone())
-        self.handoff_package["position_ids"] = kwargs.get("position_ids")
-        self.handoff_package["cache_a"] = kwargs.get("past_key_values")
-    """
-
-    def setup_model_master(self, stopping_layer:int, model_path, prompt):
         start = time.time()
-        model_path = model_path
+        model_dir = os.path.join(self.model_path, self.model_name)
+        layers_dir = os.path.join(self.layers_path, self.model_name)
 
-        tokenizer = AutoTokenizer.from_pretrained(model_path)
-        config = AutoConfig.from_pretrained(model_path)
+        self.config = AutoConfig.from_pretrained(model_dir)
 
-        config.num_hidden_layers = stopping_layer
+        if self.is_master:
+            self._load_master(model_dir, layers_dir)
+        elif self.is_tail:
+            self._load_tail(model_dir, layers_dir)
+        else:
+            self._load_worker(model_dir, layers_dir)
+
+        n_layers = self.layer_end - self.layer_start + 1
+        elapsed = time.time() - start
+        print(f"[Model] {self.role} loaded: layers {self.layer_start}..{self.layer_end} "
+              f"({n_layers} layers) in {elapsed:.2f}s")
+
+    def _load_master(self, model_dir, layers_dir):
+        """Master owns embed + first N layers. Uses model() for forward."""
+        load_config = AutoConfig.from_pretrained(model_dir)
+        load_config.num_hidden_layers = self.layer_end + 1
 
         with init_empty_weights():
-            model = AutoModelForCausalLM.from_config(config)
-        
-        model_name = os.path.basename(model_path)
-        layers_dir = f"./layers/{model_name}"
-        state_a = {}
+            self.model = AutoModelForCausalLM.from_config(load_config)
 
-        state_a.update(load_file(f"{layers_dir}/embed_tokens.safetensors", device=self.device))
-        for i in range(stopping_layer):
-            state_a.update(load_file(f"{layers_dir}/layer_{i}.safetensors", device=self.device))
-            print(f"Loaded layer {i}")
-
-        model.load_state_dict(
-            state_a,
-            strict=False,
-            assign=True
-        )
-
-        model.eval()
-
-        # Prompt setup lives on Machine A — it drives the generation loop
-        messages = [{"role": "user", "content": prompt}]
-        prompt = tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True
-        )
-
-        inputs = tokenizer(prompt, return_tensors="pt").to(self.device)
-
-        print(f"Load time: {time.time() - start:.2f}s \n")
-        print("Machine A ready \n")
-
-        return model, inputs, tokenizer
-
-    def setup_model_tail(self, stopping_layer:int, model_path):
-        start = time.time()
-
-        model_path = model_path
-
-        tokenizer = AutoTokenizer.from_pretrained(model_path)
-        config = AutoConfig.from_pretrained(model_path)
-        original_total_layers = config.num_hidden_layers 
-
-        with init_empty_weights():
-            model = AutoModelForCausalLM.from_config(config)
-
-        model_name = os.path.basename(model_path)
-        layers_dir = f"./layers/{model_name}"
-        state_b = {}
-
-        for i in range(stopping_layer, original_total_layers):
-            state_b.update(load_file(f"{layers_dir}/layer_{i}.safetensors", device=self.device))
-            print(f"Loaded layer {i}")
-
-        state_b.update(load_file(f"{layers_dir}/norm.safetensors", device=self.device))
-        state_b.update(load_file(f"{layers_dir}/head.safetensors", device=self.device))
-
-        model.load_state_dict(
-            state_b,
-            strict=False,
-            assign=True
-        )
-        
-
-        kept_layers = model.model.layers[stopping_layer:]
-        model.model.layers = nn.ModuleList(kept_layers)
-        for i, layer in enumerate(model.model.layers):
-            layer.self_attn.layer_idx = i
-        
-        #for i, layer in enumerate(model.model.layers):
-            #print(i, layer.input_layernorm.weight.device)
-
-        model.eval()
-
-        print(f"Load time: {time.time() - start:.2f}s \n")
-        print("Machine B ready \n")
-
-        return model, tokenizer
-
-    def setup_model_middle(self, layer_start, layer_end, model_path, device):
-        start = time.time()
-
-        config = AutoConfig.from_pretrained(model_path)
-
-        with init_empty_weights():
-            model = AutoModelForCausalLM.from_config(config)
-
-        model_name = os.path.basename(model_path)
-        layers_dir = f"./layers/{model_name}"
         state = {}
+        state.update(load_file(f"{layers_dir}/embed_tokens.safetensors", device=self.device))
+        for i in range(self.layer_start, self.layer_end + 1):
+            state.update(load_file(f"{layers_dir}/layer_{i}.safetensors", device=self.device))
+            print(f"  Loaded layer {i}")
 
-        for i in range(layer_start, layer_end + 1):
-            state.update(load_file(f"{layers_dir}/layer_{i}.safetensors", device=device))
-            print(f"Loaded layer {i}")
+        self.model.load_state_dict(state, strict=False, assign=True)
+        self.model.eval()
+        self.tokenizer = AutoTokenizer.from_pretrained(model_dir)
 
-        model.load_state_dict(state, strict=False, assign=True)
+    def _load_tail(self, model_dir, layers_dir):
+        """Tail owns last N layers + norm + lm_head. Uses model.model() + lm_head."""
+        with init_empty_weights():
+            self.model = AutoModelForCausalLM.from_config(self.config)
 
-        kept_layers = model.model.layers[layer_start:layer_end + 1]
-        model.model.layers = nn.ModuleList(kept_layers)
-        for i, layer in enumerate(model.model.layers):
+        state = {}
+        for i in range(self.layer_start, self.layer_end + 1):
+            state.update(load_file(f"{layers_dir}/layer_{i}.safetensors", device=self.device))
+            print(f"  Loaded layer {i}")
+        state.update(load_file(f"{layers_dir}/norm.safetensors", device=self.device))
+        state.update(load_file(f"{layers_dir}/head.safetensors", device=self.device))
+
+        self.model.load_state_dict(state, strict=False, assign=True)
+
+        # Slice to keep only our layers, re-index for cache
+        kept = self.model.model.layers[self.layer_start:self.layer_end + 1]
+        self.model.model.layers = nn.ModuleList(kept)
+        for i, layer in enumerate(self.model.model.layers):
             layer.self_attn.layer_idx = i
 
-        model.eval()
-        print(f"Middle node ready — layers {layer_start}..{layer_end}, "
-            f"load time: {time.time() - start:.2f}s")
+        self.model.eval()
+        self.tokenizer = AutoTokenizer.from_pretrained(model_dir)
 
-        return model
-    
-    def unload_model(self):
+    def _load_worker(self, model_dir, layers_dir):
+        """Worker owns middle layers only. Uses model.model() with Identity norm."""
+        with init_empty_weights():
+            self.model = AutoModelForCausalLM.from_config(self.config)
+
+        state = {}
+        for i in range(self.layer_start, self.layer_end + 1):
+            state.update(load_file(f"{layers_dir}/layer_{i}.safetensors", device=self.device))
+            print(f"  Loaded layer {i}")
+
+        self.model.load_state_dict(state, strict=False, assign=True)
+
+        kept = self.model.model.layers[self.layer_start:self.layer_end + 1]
+        self.model.model.layers = nn.ModuleList(kept)
+        for i, layer in enumerate(self.model.model.layers):
+            layer.self_attn.layer_idx = i
+
+        # Worker must NOT apply norm — only tail does that
+        self.model.model.norm = nn.Identity()
+
+        self.model.eval()
+
+    def unload(self):
+        """Free all model resources."""
         self.remove_hooks()
-        
+
         if self.model is not None:
             del self.model
             self.model = None
@@ -277,13 +147,188 @@ class Model:
             self.tokenizer = None
 
         self.config = None
-
         gc.collect()
 
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-        self.reset_turn_state() 
+        self.reset_turn_state()
+
+    def reset_turn_state(self):
+        """Clear per-generation-turn state. Called between queries."""
+        self.handoff_package = {}
+        self.layer_history = {}
+        self.timing_starts = {}
+        self.pass_counter = {"i": 0}
+        self.generated_ids = []
+
+    # ================================================================
+    # FORWARD DISPATCH
+    # ================================================================
+
+    def forward(self, model_input, cache):
+        """
+        Unified forward call. Dispatches based on role.
+
+        Args:
+            model_input:  input_ids tensor (master) or hidden state tensor (worker/tail)
+            cache:        DynamicCache or None (created fresh if None)
+
+        Returns:
+            master:  (hidden_state, cache)
+            worker:  (hidden_state, cache)
+            tail:    (next_token_id, cache)
+        """
+        if self.is_master:
+            return self._forward_master(model_input, cache)
+        elif self.is_tail:
+            return self._forward_tail(model_input, cache)
+        else:
+            return self._forward_worker(model_input, cache)
+
+    def _forward_master(self, input_ids, cache):
+        """
+        Run model(input_ids=...) with hooks. The boundary layer hook
+        captures the hidden state and raises StopIteration to halt
+        the forward pass early. Cache is mutated in-place.
+        """
+        if cache is None:
+            cache = DynamicCache()
+
+        try:
+            with torch.no_grad():
+                self.model(
+                    input_ids=input_ids,
+                    past_key_values=cache,
+                    use_cache=True,
+                    return_dict=True,
+                )
+        except StopIteration:
+            pass
+
+        hidden = self.handoff_package["hidden"]
+        return hidden, cache
+
+    def _forward_worker(self, hidden, cache):
+        """
+        Run model.model(inputs_embeds=...) — inner model without embed/head.
+        Norm is Identity so hidden passes through unnormed.
+        """
+        if cache is None:
+            cache = DynamicCache()
+
+        with torch.no_grad():
+            out = self.model.model(
+                inputs_embeds=hidden,
+                past_key_values=cache,
+                use_cache=True,
+                attn_implementation="eager",
+            )
+
+        return out.last_hidden_state, cache
+
+    def _forward_tail(self, hidden, cache):
+        """
+        Run model.model(inputs_embeds=...) + lm_head to produce next token.
+        Norm IS applied here (not replaced with Identity).
+        """
+        if cache is None:
+            cache = DynamicCache()
+
+        with torch.no_grad():
+            out = self.model.model(
+                inputs_embeds=hidden,
+                past_key_values=cache,
+                use_cache=True,
+                attn_implementation="eager",
+            )
+            logits = self.model.lm_head(out.last_hidden_state)
+            next_token_id = torch.argmax(logits[:, -1, :], dim=-1)
+
+        return next_token_id, cache
+
+    # ================================================================
+    # TOKENIZATION (master and tail only)
+    # ================================================================
+
+    def tokenize(self, messages):
+        """
+        Apply chat template to message list, return input_ids tensor.
+        Used by master to prepare the prompt.
+        """
+        prompt = self.tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True,
+        )
+        inputs = self.tokenizer(prompt, return_tensors="pt")
+        return inputs.input_ids
+
+    def decode(self, token_ids):
+        """Decode a list of token IDs back to text."""
+        return self.tokenizer.decode(token_ids, skip_special_tokens=True)
+
+    # ================================================================
+    # HOOKS (master only — StopIteration at boundary layer)
+    # ================================================================
+
+    def register_hooks(self, debug=False):
+        """
+        Register forward hooks on master's layers.
+        The boundary layer (layer_end) gets a hook that captures hidden
+        state and raises StopIteration to halt the forward pass.
+
+        Workers and tail don't need hooks — they use model.model() directly.
+        """
+        if not self.is_master:
+            return
+
+        for i, layer in enumerate(self.model.model.layers):
+            global_idx = self.layer_start + i
+            timer_start, hidden_hook = self._make_layer_hook(
+                boundary=self.layer_end,
+                global_idx=global_idx,
+            )
+            pre = layer.register_forward_pre_hook(timer_start, with_kwargs=True)
+            post = layer.register_forward_hook(hidden_hook)
+            self.layer_hooks[global_idx] = (pre, post)
+
+        print(f"[Model] Registered hooks on layers {self.layer_start}..{self.layer_end}, "
+              f"boundary={self.layer_end}")
+
+    def _make_layer_hook(self, boundary, global_idx):
+        """
+        Create pre/post hooks for a single layer.
+
+        Every layer: captures hidden + timing for validation.
+        Boundary layer: also raises StopIteration to halt forward pass.
+        """
+        is_boundary = (global_idx == boundary)
+        pass_counter = self.pass_counter
+
+        def timer_start(module, args, kwargs):
+            key = (pass_counter["i"], global_idx)
+            self.timing_starts[key] = time.perf_counter()
+
+        def hidden_hook(module, input, output):
+            key = (pass_counter["i"], global_idx)
+            t0 = self.timing_starts.get(key)
+            dur = (time.perf_counter() - t0) if t0 is not None else 0.0
+
+            # Transformers 5.x: LlamaDecoderLayer returns bare tensor, not tuple
+            if isinstance(output, tuple):
+                hidden = output[0].detach()
+            else:
+                hidden = output.detach()
+
+            if hidden.dim() == 2:
+                hidden = hidden.unsqueeze(0)
+
+            self.layer_history[key] = {"hidden": hidden, "dur": dur}
+
+            if is_boundary:
+                self.handoff_package["hidden"] = hidden
+                raise StopIteration
+
+        return timer_start, hidden_hook
 
     def remove_hooks(self):
         """Remove all registered hooks from the model's layers."""
@@ -294,4 +339,3 @@ class Model:
             else:
                 handles.remove()
         self.layer_hooks = {}
-    

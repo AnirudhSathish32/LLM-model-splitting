@@ -1,7 +1,7 @@
 import torch
 import os
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -22,15 +22,11 @@ class LocalConfig:
     ### Paths Config ###
     model_path: str
     layers_path: str
-    #handoff_dir: str
-    #received_dir: str
 
     CONFIG_PATH = "./config/local_config.json"
 
     def save(self, path=None):
-        """
-        persist current settings to disk
-        """
+        """Persist current settings to disk."""
         path = path or self.CONFIG_PATH
         os.makedirs(os.path.dirname(path), exist_ok=True)
         data = {
@@ -50,9 +46,6 @@ class LocalConfig:
           1. Saved file (user's UI choices)
           2. Environment variables (CLI override)
           3. Defaults (first run)
-        
-        Env vars override saved file when set, so a deployment
-        can force a setting regardless of what the UI saved.
         """
         path = path or cls.CONFIG_PATH
         saved = {}
@@ -70,13 +63,13 @@ class LocalConfig:
                                 saved.get("model_path", "./models")),
             debug=os.getenv("DEBUG", str(saved.get("debug", False))).lower() == "true",
             tailscale_ip=os.getenv("TAILSCALE_IP", saved.get("tailscale_ip", "")),
-        )     
+        )
 
 # ================================================================
-# NETWORK CONFIG 
+# PROTOCOL CONSTANTS
 # ================================================================
-MACHINE_A_TAILSCALE_IP = os.getenv("MACHINE_A_TAILSCALE_IP")
-TAILSCALE_PORT         = 65432
+
+# Inference data plane
 MSG_FIRST_PASS = 1
 MSG_NEXT_PASS  = 2
 MSG_TOKEN      = 3
@@ -84,16 +77,17 @@ MSG_EOS        = 4
 MSG_LAYER      = 5
 MSG_TTFT       = 6
 MSG_STOP       = 7
-MSG_PROFILE    = 8
-MSG_PING       = 9
-MSG_BENCHMARK_REQ = 10
-MSG_PONG       = 11
-MSG_BENCHMARK_MISS = 12
-MSG_BENCHMARK_RESP = 13
-MSG_CONFIG = 14
-MSG_READY = 15
-MSG_START = 16
-MSG_RESPONSE = 17
+MSG_RESPONSE   = 8
 
-ANIRUDH_MACHINE_A = "100.74.100.92"
-PRANATHI_MACHINE_A = ""
+# Daemon control plane
+MSG_PING           = 20
+MSG_PONG           = 21
+MSG_BENCHMARK_REQ  = 22
+MSG_BENCHMARK_RESP = 23
+MSG_BENCHMARK_MISS = 24
+MSG_CONFIG         = 25
+MSG_READY          = 26
+MSG_START          = 31
+
+# Legacy convenience (remove when old scripts are deleted)
+TAILSCALE_PORT = 65432

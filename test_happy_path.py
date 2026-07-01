@@ -8,18 +8,10 @@ Usage:
     python test_happy_path.py
 
 Requirements:
-    - Layer files exist at local.layers_dir/<model_name>/
-    - Model files exist at local.model_dir/<model_name>/
+    - Layer files exist at <layers_path>/<model_name>/
+    - Model files exist at <model_path>/<model_name>/
     - Enough RAM/VRAM to hold 3 slices simultaneously
 """
-
-import sys
-import os
-import user_query
-print("\n--- WHAT IS ACTUALLY INSIDE USER_QUERY.PY? ---")
-print(dir(user_query))
-print("----------------------------------------------\n")
-
 
 import threading
 import queue
@@ -28,7 +20,7 @@ import torch
 from config import SharedConfig, LocalConfig
 from user_query import UserQuery
 from inference_peer import InferencePeer
-from networking.protocol import send_message, read_message
+from session import Session
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -39,8 +31,7 @@ class FakeConnection:
     """
     Drop-in replacement for a TCP socket. Two FakeConnections are
     linked by a shared queue — sendall on one side puts bytes into
-    the queue, recv on the other side pulls them out. Thread-safe
-    because queue.Queue handles locking internally.
+    the queue, recv on the other side pulls them out.
     """
 
     def __init__(self, send_queue, recv_queue):
@@ -52,7 +43,6 @@ class FakeConnection:
         self.send_queue.put(data)
 
     def recv(self, bufsize):
-        # drain the queue into the buffer if empty
         while len(self._recv_buffer) < bufsize:
             try:
                 chunk = self.recv_queue.get(timeout=30)
@@ -60,7 +50,6 @@ class FakeConnection:
             except queue.Empty:
                 raise ConnectionError("FakeConnection timeout — peer not sending")
 
-        # return requested bytes, keep the rest
         result = self._recv_buffer[:bufsize]
         self._recv_buffer = self._recv_buffer[bufsize:]
         return result
@@ -70,43 +59,37 @@ class FakeConnection:
 
 
 def make_connection_pair():
-    """
-    Create two linked FakeConnections. What one sends, the other receives.
-
-    Returns (conn_a, conn_b) — a sends to b, b sends to a.
-    """
+    """Create two linked FakeConnections. What one sends, the other receives."""
     q_a_to_b = queue.Queue()
     q_b_to_a = queue.Queue()
-
     conn_a = FakeConnection(send_queue=q_a_to_b, recv_queue=q_b_to_a)
     conn_b = FakeConnection(send_queue=q_b_to_a, recv_queue=q_a_to_b)
-
     return conn_a, conn_b
 
 
 # ═══════════════════════════════════════════════════════════════
-# TEST SETUP
+# TEST
 # ═══════════════════════════════════════════════════════════════
 
 def test_happy_path():
-    model_name = "llama-3b"     # use your smaller model for testing
+    model_name = "llama-3b"
     prompt = "hello there"
     tokens = 10
 
     local = LocalConfig(
-        "cuda", False, "100.74.100.92", "./llama-3b", "./layers/llama-3b"
+        device="cuda" if torch.cuda.is_available() else "cpu",
+        debug=False,
+        tailscale_ip="100.74.100.92",
+        model_path="./",         # model at ./<model_name>/
+        layers_path="./layers",  # layers at ./layers/<model_name>/
     )
 
     # ── Build a 3-node pipeline manually ─────────────────
-    # In production, build_pipeline computes this from benchmarks.
-    # For testing, we hardcode a split.
-
     from transformers import AutoConfig
-    model_path = f"{local.model_path}"
-    config = AutoConfig.from_pretrained(model_path)
+    model_dir = f"./{model_name}"
+    config = AutoConfig.from_pretrained(model_dir)
     total_layers = config.num_hidden_layers
 
-    # split roughly into thirds
     split_1 = total_layers // 3
     split_2 = 2 * total_layers // 3
 
@@ -136,21 +119,23 @@ def test_happy_path():
         dtype=torch.float16,
     )
 
-    # ── Create fake connections ──────────────────────────
-    # master ←→ worker ←→ tail
+    # ── Create fake connections (circular topology) ──────
+    # Forward chain: master → worker → tail (hidden states)
     master_to_worker, worker_from_master = make_connection_pair()
     worker_to_tail, tail_from_worker = make_connection_pair()
 
-    # tail sends tokens back to master (reverse channel)
+    # Return channel: tail → master (tokens, circular)
     tail_to_master, master_from_tail = make_connection_pair()
 
     # ── Create peers with overridden IPs ─────────────────
-    # Override tailscale_ip on local config so each peer
-    # finds itself in the pipeline by its fake IP
-
     def make_local(fake_ip):
-        l = LocalConfig.load()
-        l.tailscale_ip = fake_ip
+        l = LocalConfig(
+            device=local.device,
+            debug=False,
+            tailscale_ip=fake_ip,
+            model_path=local.model_path,
+            layers_path=local.layers_path,
+        )
         return l
 
     master_peer = InferencePeer(shared, make_local("master"))
@@ -167,32 +152,32 @@ def test_happy_path():
 
     print(f"All models loaded in {time.time() - t0:.1f}s")
 
-    # ── Inject fake connections ──────────────────────────
-    # Bypass peer.connect() — inject the queue-backed connections directly
-
+    # ── Inject fake connections (circular) ───────────────
+    # Master: downstream = first worker, upstream = tail (token return)
     master_peer.downstream_conn = master_to_worker
-    master_peer.upstream_conn   = master_from_tail    # receives tokens from tail
+    master_peer.upstream_conn   = master_from_tail
 
+    # Worker: upstream = master, downstream = tail
     worker_peer.upstream_conn   = worker_from_master
     worker_peer.downstream_conn = worker_to_tail
 
+    # Tail: upstream = worker, downstream = master (token return)
     tail_peer.upstream_conn     = tail_from_worker
-    tail_peer.downstream_conn   = tail_to_master      # sends tokens to master
+    tail_peer.downstream_conn   = tail_to_master
 
     # ── Run all three peers in threads ───────────────────
     results = {}
     errors = {}
 
-    def run_peer(name, peer, query, session=None):
+    def run_peer(name, peer, query_arg=None, session=None):
         try:
-            result = peer.run_generation(query, session)
+            result = peer.run_generation(query=query_arg, session=session)
             results[name] = result
         except Exception as e:
             errors[name] = e
             import traceback
             traceback.print_exc()
 
-    from session import Session
     session = Session(session_id="test-session")
     session.add_user_message(prompt)
 
@@ -205,7 +190,7 @@ def test_happy_path():
     )
     worker_thread = threading.Thread(
         target=run_peer,
-        args=("worker", worker_peer, query),
+        args=("worker", worker_peer),
     )
     tail_thread = threading.Thread(
         target=run_peer,
@@ -234,18 +219,17 @@ def test_happy_path():
 
     if "master" in results:
         print(f"\nResponse: {results['master']}")
-    elif "tail" in results:
-        print(f"\nResponse: {results['tail']}")
 
     print(f"\nGeneration time: {gen_time:.2f}s")
     print(f"Tokens: {tokens}")
-    print(f"Per token: {gen_time/tokens*1000:.0f}ms")
+    if gen_time > 0:
+        print(f"Per token: {gen_time/tokens*1000:.0f}ms")
     print(f"{'='*60}")
 
     # ── Cleanup ──────────────────────────────────────────
-    master_peer.model.unload()
-    worker_peer.model.unload()
-    tail_peer.model.unload()
+    master_peer.cleanup()
+    worker_peer.cleanup()
+    tail_peer.cleanup()
 
     return len(errors) == 0
 

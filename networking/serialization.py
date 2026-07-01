@@ -2,7 +2,7 @@ import torch, io
 from dataclasses import asdict
 
 def tensor_from_bytes(payload, device="cpu"):
-    return torch.load(io.BytesIO(payload), map_location=device)
+    return torch.load(io.BytesIO(payload), map_location=device, weights_only=False)
 
 def tensor_to_bytes(obj):
     buffer = io.BytesIO()
@@ -14,15 +14,14 @@ def to_bytes(obj):
     buf = io.BytesIO()
     torch.save(asdict(obj), buf)
     return buf.getvalue()
- 
- 
+
 def from_bytes(cls, data):
     """Deserialize bytes back into a dataclass instance."""
-    d = torch.load(io.BytesIO(data), weights_only=False)
+    d = torch.load(io.BytesIO(data), map_location="cpu", weights_only=False)
     return cls(**d)
 
 def serialize_config_query(obj):
+    """Serialize a dict (e.g. bundled shared+query) to bytes."""
     buf = io.BytesIO()
     torch.save(obj, buf)
-    payload = buf.getvalue()
-    return payload
+    return buf.getvalue()

@@ -144,30 +144,19 @@ def load_benchmark(model_name, benchmark_dir="./benchmark/"):
     
 
 if __name__ == "__main__":
-    """
     if len(sys.argv) < 2:
-        print("Usage: python benchmark_machine.py <model_name>")
-        print("Example: python benchmark_machine.py llama-8b")
+        print("Usage: python benchmark.py <model_name>")
+        print("Example: python benchmark.py llama-8b")
         sys.exit(1)
 
     model_name = sys.argv[1]
-    
     local = LocalConfig.load()
 
     result = benchmark_single_layer(
-        model_path=f"{local.model_dir}/{model_name}",
-        layers_dir=local.layers_dir,
+        model_path=os.path.join(local.model_path, model_name),
+        layers_path=os.path.join(local.layers_path, model_name),
         device=local.device,
         dtype=torch.float16,
-        warmup=3,
-        trials=10,
-    )
-    """
-    result = benchmark_single_layer(
-        model_path=MODEL_PATH,
-        layers_path=LAYERS_PATH,
-        device=DEVICE,
-        dtype=DTYPE,
         warmup=3,
         trials=10,
     )

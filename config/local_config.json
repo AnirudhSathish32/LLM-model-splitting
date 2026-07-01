@@ -1,0 +1,7 @@
+{
+  "device": "cuda",
+  "layers_path": "./layers",
+  "model_path": "./models",
+  "debug": false,
+  "tailscale_ip": "100.74.100.92"
+}
