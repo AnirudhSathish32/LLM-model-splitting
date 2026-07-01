@@ -160,14 +160,12 @@ class Daemon:
  
             response = peer.run_generation(query=query, session=session)
  
-            # Send response back to the initiator on the control connection
+            # Send response using the peer's dedicated out-of-band method
             print(f"[Daemon] Generation complete — sending response ({len(response)} chars)")
-            send_message(conn, MSG_RESPONSE, response.encode("utf-8"))
+            peer.send_response(response)
         else:
             # Worker/tail — just run, no response to send
             peer.run_generation(query=query)
-
-        peer.run_generation(query)
 
 
 # ================================================================
