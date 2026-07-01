@@ -26,6 +26,7 @@ class UserQuery:
 # ═══════════════════════════════════════════════════════════════
 
 def send_query(query, local: LocalConfig, session_manager, daemon_port=65433):
+    import os
     """
     Single entry point called by the frontend/API when the user
     sends a prompt. Orchestrates the entire flow:
@@ -61,7 +62,7 @@ def send_query(query, local: LocalConfig, session_manager, daemon_port=65433):
               f"(no benchmark for {query.model_name})")
 
     # Step 2: Build the pipeline
-    model_path = local.model_path
+    model_path = os.path.join(local.model_path, query.model_name)
     pipeline = build_pipeline(benchmarks, model_path)
 
     # Step 3: Construct SharedConfig

@@ -1,15 +1,17 @@
 import os, sys, json, socket, threading, time, torch, io
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from config import (
     SharedConfig, LocalConfig,
     MSG_PING, MSG_PONG,
     MSG_BENCHMARK_REQ, MSG_BENCHMARK_RESP, MSG_BENCHMARK_MISS,
     MSG_CONFIG, MSG_READY, MSG_START, MSG_RESPONSE
 )
-from protocol import read_message, send_message
-from tailscale import get_online_peers, get_my_ip
+from networking.protocol import read_message, send_message
+from networking.tailscale import get_online_peers, get_my_ip
 from benchmark import load_benchmark
-from serialization import from_bytes, to_bytes
+from networking.serialization import from_bytes, to_bytes
 from inference_peer import InferencePeer
 
 
