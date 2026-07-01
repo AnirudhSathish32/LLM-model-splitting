@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 import torch
-from networking.daemon import discover_and_collect, send_config_to_peer, send_query_to_peer
+from networking.daemon import discover_and_collect
 from hardware import build_pipeline
 from config import SharedConfig, LocalConfig, MSG_CONFIG, MSG_READY, MSG_START, MSG_RESPONSE
 from networking.protocol import read_message, send_message
@@ -10,7 +10,7 @@ from networking.protocol import send_message
 import threading
 
 @dataclass
-class Query:
+class UserQuery:
     prompt: str
     model_name: str
     session_id: str

@@ -2,9 +2,9 @@ import torch, psutil, time, os, sys, json
 from transformers import AutoConfig, AutoModelForCausalLM
 from accelerate import init_empty_weights
 from safetensors.torch import load_file
-from config import LocalConfig, LAYERS_DIR, MODEL_PATH, DTYPE, DEVICE
+from config import LocalConfig
 
-def benchmark_single_layer(model_path, layers_dir, device, dtype, warmup=3, trials=10):
+def benchmark_single_layer(model_path, layers_path, device, dtype, warmup=3, trials=10):
     """
     Benchmarking for llama-3B and llama-8B
     """
@@ -14,8 +14,8 @@ def benchmark_single_layer(model_path, layers_dir, device, dtype, warmup=3, tria
  
     config = AutoConfig.from_pretrained(model_path)
     model_name = os.path.basename(model_path)
-    layer_file = f"{layers_dir}/layer_0.safetensors"
-    embed_file = f"{layers_dir}/embed_tokens.safetensors"
+    layer_file = f"{layers_path}/layer_0.safetensors"
+    embed_file = f"{layers_path}/embed_tokens.safetensors"
  
     if not os.path.exists(layer_file):
         print(f"ERROR: {layer_file} not found.")
@@ -165,7 +165,7 @@ if __name__ == "__main__":
     """
     result = benchmark_single_layer(
         model_path=MODEL_PATH,
-        layers_dir=LAYERS_DIR,
+        layers_path=LAYERS_PATH,
         device=DEVICE,
         dtype=DTYPE,
         warmup=3,

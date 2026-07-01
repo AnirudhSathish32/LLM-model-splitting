@@ -1,7 +1,6 @@
 from transformers import AutoTokenizer, AutoConfig, AutoModelForCausalLM, DynamicCache
 from accelerate import init_empty_weights
 from safetensors.torch import load_file
-from query import Query
 import torch.nn as nn
 import os
 import time

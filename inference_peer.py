@@ -2,7 +2,7 @@ from transformers import DynamicCache, DynamicLayer
 import torch 
 import time
 import os
-from query import Query
+
 from model import Model
 import socket
 from networking.tailscale import (
@@ -22,9 +22,6 @@ from networking.protocol import (
     read_message
 )
 from config import (
-    DEVICE,
-    RECEIVED_DIR,
-    HANDOFF_DIR,
     MSG_FIRST_PASS,
     MSG_NEXT_PASS,
     MSG_STOP,
@@ -101,7 +98,8 @@ class InferencePeer:
         if session_id not in self.caches:
             self.caches[session_id] = None
     
-    def load_query_into_model(self, query: Query):
+    def load_query_into_model(self, query):
+        from user_query import UserQuery
         if self.loaded_model_name != query.model_name:
             if self.model is not None:
                 self.model.unload()
@@ -307,6 +305,8 @@ class InferencePeer:
                 first_pass = False
             else:
                 msg_type, hidden = self.receive_hidden(expect=MSG_NEXT_PASS)
+                if msg_type == MSG_STOP:
+                    break
 
             hidden = hidden.to(self.model.device)
 
@@ -331,7 +331,7 @@ class InferencePeer:
 
         self._set_cache(cache)
     
-
+"""
 def load_handoff_package(save_dir=RECEIVED_DIR, first_pass=True):
     if first_pass:
         hidden = torch.load(f"{save_dir}/hidden.pt", map_location=DEVICE)
@@ -350,6 +350,6 @@ def save_handoff_package(hidden, position_embeddings, position_ids, save_dir=HAN
     torch.save(position_embeddings[0], f"{save_dir}/cos.pt")
     torch.save(position_embeddings[1], f"{save_dir}/sin.pt")
     torch.save(position_ids, f"{save_dir}/position_ids.pt")
-
+"""
 def logging(msg):
     print(msg)

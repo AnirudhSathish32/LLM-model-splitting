@@ -13,12 +13,20 @@ Requirements:
     - Enough RAM/VRAM to hold 3 slices simultaneously
 """
 
+import sys
+import os
+import user_query
+print("\n--- WHAT IS ACTUALLY INSIDE USER_QUERY.PY? ---")
+print(dir(user_query))
+print("----------------------------------------------\n")
+
+
 import threading
 import queue
 import time
 import torch
 from config import SharedConfig, LocalConfig
-from query import Query
+from user_query import UserQuery
 from inference_peer import InferencePeer
 from networking.protocol import send_message, read_message
 
@@ -85,14 +93,16 @@ def test_happy_path():
     prompt = "hello there"
     tokens = 10
 
-    local = LocalConfig.load()
+    local = LocalConfig(
+        "cuda", False, "100.74.100.92", "./llama-3b", "./layers/llama-3b"
+    )
 
     # ── Build a 3-node pipeline manually ─────────────────
     # In production, build_pipeline computes this from benchmarks.
     # For testing, we hardcode a split.
 
     from transformers import AutoConfig
-    model_path = f"{local.model_dir}/{model_name}"
+    model_path = f"{local.model_path}"
     config = AutoConfig.from_pretrained(model_path)
     total_layers = config.num_hidden_layers
 
@@ -118,7 +128,7 @@ def test_happy_path():
         pipeline=pipeline,
     )
 
-    query = Query(
+    query = UserQuery(
         prompt=prompt,
         model_name=model_name,
         session_id="test-session",

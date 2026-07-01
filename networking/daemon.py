@@ -14,10 +14,6 @@ MSG_READY,
 MSG_START
 )
 
-from query import(
-    Query
-)
-
 from networking.protocol import read_message, read_TCP_data, send_message
 from networking.tailscale import get_online_peers, get_my_ip
 from benchmark import load_benchmark
@@ -120,9 +116,12 @@ class Daemon:
 
 
     def _handle_config_query(self, conn, payload):
+        from user_query import(
+            UserQuery
+        )
         bundle = torch.load(io.BytesIO(payload), weights_only=False)
         shared = from_bytes(SharedConfig, bundle["shared"])
-        query = from_bytes(Query, bundle["query"])
+        query = from_bytes(UserQuery, bundle["query"])
 
         # find our assignment
         my_ip = self.local.tailscale_ip

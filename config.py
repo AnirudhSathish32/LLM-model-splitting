@@ -22,8 +22,8 @@ class LocalConfig:
     ### Paths Config ###
     model_path: str
     layers_path: str
-    handoff_dir: str
-    received_dir: str
+    #handoff_dir: str
+    #received_dir: str
 
     CONFIG_PATH = "./config/local_config.json"
 
@@ -64,9 +64,9 @@ class LocalConfig:
             device=os.getenv("DEVICE",
                             saved.get("device",
                                     "cuda" if torch.cuda.is_available() else "cpu")),
-            layers_dir=os.getenv("LAYERS_PATH",
+            layers_path=os.getenv("LAYERS_PATH",
                                 saved.get("layers_path", "./layers")),
-            model_dir=os.getenv("MODEL_PATH",
+            model_path=os.getenv("MODEL_PATH",
                                 saved.get("model_path", "./models")),
             debug=os.getenv("DEBUG", str(saved.get("debug", False))).lower() == "true",
             tailscale_ip=os.getenv("TAILSCALE_IP", saved.get("tailscale_ip", "")),
