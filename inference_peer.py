@@ -127,43 +127,55 @@ class InferencePeer:
         """
         Establish chain connections. Circular topology:
           Master → Worker(s) → Tail → Master
-
-        Each node listens for its upstream and connects to its downstream.
-        Retry loop with exponential backoff handles startup race conditions.
-        SO_REUSEADDR on all server sockets to avoid TIME_WAIT port locks.
+ 
+        For 2-machine (master + tail): single full-duplex TCP connection.
+        Both hidden states (master→tail) and tokens (tail→master) flow
+        on the same socket. No second port needed.
+ 
+        For N-machine (with workers): each adjacent pair gets one connection.
+        Tail also connects back to master for the token return channel.
         """
-        
         port = self.shared.port  # 65432
-
+        n_peers = len(self.shared.pipeline)
+ 
         if self.is_master:
-            # Master: listen for downstream (first worker or tail connects TO us)
-            #         AND listen for upstream (tail connects back to us for tokens)
+            # Accept connection from first downstream neighbor
             self.downstream_conn = self._listen_accept(port)
-            print(f"[Peer] Master: downstream connected")
-
-            # For the reverse channel, use port+1 so it doesn't clash
-            self.upstream_conn = self._listen_accept(port + 10)
-            print(f"[Peer] Master: upstream (token return) connected")
-
+            print(f"[Peer] Master: downstream connected on port {port}")
+ 
+            if n_peers == 2:
+                # 2-machine: reuse same connection for token return (full-duplex)
+                self.upstream_conn = self.downstream_conn
+                print(f"[Peer] Master: upstream = downstream (full-duplex, 2-machine)")
+            else:
+                # N-machine: tail connects separately for token return
+                self.upstream_conn = self._listen_accept(port)
+                print(f"[Peer] Master: upstream (token return) accepted on port {port}")
+ 
         elif self.is_tail:
-            # Tail: connect upstream (to last worker or master)
-            #       AND connect downstream to master (token return on port+1)
+            # Connect upstream to previous node in chain
             self.upstream_conn = self._connect_with_retry(
                 self.upstream_ip, port, max_retries, retry_delay)
-            print(f"[Peer] Tail: connected upstream to {self.upstream_ip}")
-
-            self.downstream_conn = self._connect_with_retry(
-                self.downstream_ip, port + 1, max_retries, retry_delay)
-            print(f"[Peer] Tail: connected downstream (token return) to {self.downstream_ip}")
-
+            print(f"[Peer] Tail: connected upstream to {self.upstream_ip}:{port}")
+ 
+            if n_peers == 2:
+                # 2-machine: reuse same connection for token return (full-duplex)
+                self.downstream_conn = self.upstream_conn
+                print(f"[Peer] Tail: downstream = upstream (full-duplex, 2-machine)")
+            else:
+                # N-machine: separate connection back to master for tokens
+                self.downstream_conn = self._connect_with_retry(
+                    self.downstream_ip, port, max_retries, retry_delay)
+                print(f"[Peer] Tail: connected downstream (token return) to {self.downstream_ip}:{port}")
+ 
         else:
             # Worker: connect upstream, listen for downstream
             self.upstream_conn = self._connect_with_retry(
                 self.upstream_ip, port, max_retries, retry_delay)
-            print(f"[Peer] Worker: connected upstream to {self.upstream_ip}")
-
+            print(f"[Peer] Worker: connected upstream to {self.upstream_ip}:{port}")
+ 
             self.downstream_conn = self._listen_accept(port)
-            print(f"[Peer] Worker: downstream connected")
+            print(f"[Peer] Worker: downstream connected on port {port}")
 
     def _listen_accept(self, port):
         """Bind, listen, accept one connection. SO_REUSEADDR applied."""
