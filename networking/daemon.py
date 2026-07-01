@@ -1,5 +1,5 @@
 import os, sys, json, socket, threading, time, torch, io
-
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import (
     SharedConfig, LocalConfig,
     MSG_PING, MSG_PONG,
