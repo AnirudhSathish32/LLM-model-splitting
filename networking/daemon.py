@@ -120,6 +120,8 @@ class Daemon:
         if my_entry is None:
             print(f"[Daemon] WARNING: {my_ip} not in pipeline")
             return
+        
+        is_master = my_entry["role"] == "master"
 
         print(f"[Daemon] Role: {my_entry['role']}, "
               f"layers: {my_entry['layers'][0]}..{my_entry['layers'][1]}, "
@@ -151,7 +153,7 @@ class Daemon:
         print(f"[Daemon] Start signal received — connecting chain")
         peer.connect()
 
-        if self.is_master:
+        if is_master:
             # Master needs a session to tokenize the conversation
             session = Session(session_id=query.session_id)
             session.add_user_message(query.prompt)
