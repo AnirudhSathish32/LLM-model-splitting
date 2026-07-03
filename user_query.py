@@ -135,11 +135,18 @@ def send_query(query, local: LocalConfig, session_manager, daemon_port=65433):
     # Step 4: Send config to all peers, wait for ready, send start
     peer_ips = [entry["ip"] for entry in pipeline]
     master_ip = pipeline[0]["ip"]
-    send_shared_config_with_query(query, shared, peer_ips, daemon_port)
+    master_conn = send_shared_config_with_query(query, shared, peer_ips, daemon_port)
 
     # Step 5: Wait for response from tail
     print("[Orchestrator] Waiting for response...")
-    response = receive_response_from_tail(shared.port)
+    master_conn.settimeout(300)
+    msg_type, payload = read_message(master_conn)
+    master_conn.close()
+
+    if msg_type != MSG_RESPONSE:
+        raise ValueError(f"Expected MSG_RESPONSE from master, got {msg_type}")
+ 
+    response = payload.decode("utf-8")
 
     _cached_pipeline = {
         "shared": shared,
@@ -294,6 +301,7 @@ def send_shared_config_with_query(query, shared, peer_ips, daemon_port=65433):
     }
     payload = serialize_config_query(bundle)
 
+    master_ip = shared.pipeline[0]["ip"]
     connections = {}
     lock = threading.Lock()
 
@@ -334,9 +342,12 @@ def send_shared_config_with_query(query, shared, peer_ips, daemon_port=65433):
     print(f"[Orchestrator] All {len(connections)} peers ready — sending start signal")
     for ip, sock in connections.items():
         send_message(sock, MSG_START)
-        sock.close()
+        if ip != master_ip:
+            sock.close()
+    
 
     print(f"[Orchestrator] Pipeline is live")
+    return connections[master_ip]
 
 
 # ═══════════════════════════════════════════════════════════════

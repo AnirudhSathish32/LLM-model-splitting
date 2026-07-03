@@ -172,7 +172,7 @@ class Daemon:
  
             # Send response using the peer's dedicated out-of-band method
             print(f"[Daemon] Generation complete — sending response ({len(response)} chars)")
-            peer.send_response(response)
+            send_message(conn, MSG_RESPONSE, response.encode("utf-8"))
         else:
             # Worker/tail — just run, no response to send
             peer.run_generation(query=query)
