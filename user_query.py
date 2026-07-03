@@ -4,7 +4,7 @@ import socket
 import threading
 
 from hardware import build_pipeline
-from config import SharedConfig, LocalConfig, MSG_CONFIG, MSG_READY, MSG_START, MSG_RESPONSE
+from config import SharedConfig, LocalConfig, MSG_CONFIG, MSG_READY, MSG_START, MSG_RESPONSE, MSG_QUERY, MSG_QUERY_FAIL
 from networking.protocol import send_message, read_message
 from networking.serialization import to_bytes, serialize_config_query
 
@@ -20,6 +20,16 @@ class UserQuery:
     # No property — dtype is a plain dataclass field.
     # Callers pass torch.float16 / torch.bfloat16 / torch.float32 directly.
 
+
+# ═══════════════════════════════════════════════════════════════
+# PIPELINE CACHE — stored after first successful cold query
+# ═══════════════════════════════════════════════════════════════
+ 
+_cached_pipeline = None  # {"shared": SharedConfig, "peer_ips": [...], "master_ip": str}
+ 
+def clear_pipeline():
+    global _cached_pipeline
+    _cached_pipeline = None
 
 # ═══════════════════════════════════════════════════════════════
 # ORCHESTRATION — the initiator's flow from query to inference
@@ -45,6 +55,25 @@ def send_query(query, local: LocalConfig, session_manager, daemon_port=65433):
 
     print(f"\n[Orchestrator] Query received: '{query.prompt[:50]}...' "
           f"model={query.model_name} session={query.session_id}")
+    
+    # ── Warm path: try reusing existing pipeline ─────────
+    if _cached_pipeline is not None:
+        try:
+            response = _try_warm_query(query, _cached_pipeline, daemon_port)
+ 
+            session.add_assistant_message(response, query.model_name)
+            session_manager.save_session(session)
+            print(f"[Orchestrator] Response received via warm path ({len(response)} chars)")
+            return response
+ 
+        except Exception as e:
+            print(f"[Orchestrator] Warm path failed: {e}")
+            print(f"[Orchestrator] Falling back to cold path")
+            _cached_pipeline = None
+ 
+    # ── Cold path: full discovery + pipeline setup ───────
+ 
+    print(f"[Orchestrator] Running cold path (discovery + setup)")
 
     # Step 1: Discover peers and collect benchmarks
     benchmarks, unavailable = discover_and_collect(
@@ -87,6 +116,82 @@ def send_query(query, local: LocalConfig, session_manager, daemon_port=65433):
 
     print(f"[Orchestrator] Response received ({len(response)} chars)")
     return response
+
+# ═══════════════════════════════════════════════════════════════
+# WARM PATH — MSG_QUERY to existing peers
+# ═══════════════════════════════════════════════════════════════
+ 
+def _try_warm_query(query, cached, daemon_port):
+    """
+    Send MSG_QUERY to all peers in the cached pipeline.
+    Each peer responds MSG_READY (peer still loaded) or MSG_QUERY_FAIL.
+    If all ready: send START, wait for MSG_RESPONSE from master.
+    If any fail: raise so caller falls back to cold path.
+    """
+    peer_ips = cached["peer_ips"]
+    master_ip = cached["master_ip"]
+ 
+    payload = to_bytes(query)
+ 
+    connections = {}
+    errors = []
+    lock = threading.Lock()
+ 
+    def send_and_wait(ip):
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(30)
+            sock.connect((ip, daemon_port))
+ 
+            send_message(sock, MSG_QUERY, payload)
+            msg_type, _ = read_message(sock)
+ 
+            with lock:
+                if msg_type == MSG_READY:
+                    connections[ip] = sock
+                    print(f"  {ip}: warm ready")
+                elif msg_type == MSG_QUERY_FAIL:
+                    sock.close()
+                    errors.append(f"{ip}: no loaded peer")
+                else:
+                    sock.close()
+                    errors.append(f"{ip}: unexpected response {msg_type}")
+        except (ConnectionRefusedError, TimeoutError, ConnectionError) as e:
+            with lock:
+                errors.append(f"{ip}: {e}")
+ 
+    print(f"[Orchestrator] Trying warm path to {len(peer_ips)} peers...")
+    threads = []
+    for ip in peer_ips:
+        t = threading.Thread(target=send_and_wait, args=(ip,))
+        t.start()
+        threads.append(t)
+    for t in threads:
+        t.join()
+ 
+    # If any peer failed, clean up and raise
+    if errors or len(connections) != len(peer_ips):
+        for sock in connections.values():
+            sock.close()
+        raise RuntimeError(f"Warm path rejected: {'; '.join(errors)}")
+ 
+    # All peers ready — send START, keep master connection open
+    for ip, sock in connections.items():
+        send_message(sock, MSG_START)
+        if ip != master_ip:
+            sock.close()
+ 
+    master_conn = connections[master_ip]
+    master_conn.settimeout(300)
+ 
+    print(f"[Orchestrator] Warm pipeline running — waiting for response...")
+    msg_type, resp_payload = read_message(master_conn)
+    master_conn.close()
+ 
+    if msg_type != MSG_RESPONSE:
+        raise ValueError(f"Expected MSG_RESPONSE, got {msg_type}")
+ 
+    return resp_payload.decode("utf-8")
 
 
 # ═══════════════════════════════════════════════════════════════

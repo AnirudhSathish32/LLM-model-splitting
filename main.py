@@ -42,8 +42,8 @@ class SimpleSessionStore:
 
 def main():
     prompt = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else "What is the capital of France?"
-    model_name = "llama-3b"
-    tokens = 20
+    model_name = "llama-8b"
+    tokens = 50
 
     local = LocalConfig.load()
 

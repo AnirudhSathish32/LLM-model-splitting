@@ -24,6 +24,7 @@ class LocalConfig:
     layers_path: str
 
     CONFIG_PATH = "./config/local_config.json"
+    SESSION_PATH = "./sessions/"
 
     def save(self, path=None):
         """Persist current settings to disk."""
@@ -87,7 +88,8 @@ MSG_BENCHMARK_RESP = 23
 MSG_BENCHMARK_MISS = 24
 MSG_CONFIG         = 25
 MSG_READY          = 26
+MSG_QUERY          = 27
+MSG_QUERY_FAIL     = 28
 MSG_START          = 31
 
-# Legacy convenience (remove when old scripts are deleted)
 TAILSCALE_PORT = 65432

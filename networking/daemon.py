@@ -6,7 +6,7 @@ from config import (
     SharedConfig, LocalConfig,
     MSG_PING, MSG_PONG,
     MSG_BENCHMARK_REQ, MSG_BENCHMARK_RESP, MSG_BENCHMARK_MISS,
-    MSG_CONFIG, MSG_READY, MSG_START, MSG_RESPONSE
+    MSG_CONFIG, MSG_READY, MSG_START, MSG_RESPONSE, MSG_QUERY, MSG_QUERY_FAIL
 )
 from networking.protocol import read_message, send_message
 from networking.tailscale import get_online_peers, get_my_ip
@@ -71,6 +71,8 @@ class Daemon:
                 self._handle_benchmark_request(conn, model_name)
             elif msg_type == MSG_CONFIG:
                 self._handle_config_query(conn, payload)
+            elif msg_type == MSG_QUERY:
+                self._handle_query(conn, payload)
             else:
                 print(f"[Daemon] Unknown message type {msg_type} from {addr}")
 
@@ -174,6 +176,63 @@ class Daemon:
         else:
             # Worker/tail — just run, no response to send
             peer.run_generation(query=query)
+
+    def _handle_query(self, conn, payload):
+        """
+        Handle a warm query — reuse existing peer, model, and connections.
+        No model reload, no chain reconnect. Just reset turn state and run.
+        """
+        from user_query import UserQuery
+        from session import Session
+        from config import MSG_RESPONSE
+ 
+        query = from_bytes(UserQuery, payload)
+ 
+        with self.peer_lock:
+            peer = self.peer
+ 
+        if peer is None or peer.model is None:
+            print(f"[Daemon] No peer loaded — rejecting MSG_QUERY")
+            send_message(conn, MSG_QUERY_FAIL)
+            return
+ 
+        # Reset turn state but keep model, connections, and caches
+        peer.model.reset_turn_state()
+ 
+        # Update cache key for this query's session
+        cache_key = (query.session_id, query.model_name)
+        if cache_key not in peer.caches:
+            peer.caches[cache_key] = None
+        peer._active_cache_key = cache_key
+ 
+        is_master = peer.is_master
+ 
+        # Synchronize: report ready, wait for start
+        send_message(conn, MSG_READY)
+        print(f"[Daemon] Warm query ready (reusing peer, role={peer.role})")
+ 
+        msg_type, _ = read_message(conn)
+        if msg_type != MSG_START:
+            print(f"[Daemon] Expected MSG_START, got {msg_type}")
+            return
+ 
+        print(f"[Daemon] Warm query start — running generation")
+ 
+        if is_master:
+            session = Session(session_id=query.session_id)
+            if query.messages:
+                session.messages = query.messages
+            else:
+                session.add_user_message(query.prompt)
+ 
+            response = peer.run_generation(query=query, session=session)
+ 
+            print(f"[Daemon] Warm query complete — sending MSG_RESPONSE ({len(response)} chars)")
+            send_message(conn, MSG_RESPONSE, response.encode("utf-8"))
+            print(f"[Daemon] MSG_RESPONSE sent")
+        else:
+            peer.run_generation(query=query)
+            print(f"[Daemon] Warm query complete (tail/worker)")
 
 
 # ================================================================

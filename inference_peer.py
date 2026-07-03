@@ -266,12 +266,39 @@ class InferencePeer:
 
     def run_generation(self, query=None, session=None):
         """Dispatch to role-specific generation loop."""
+        self._drain_stale()
         if self.is_master:
             return self.run_master_generation(query, session)
         elif self.is_tail:
             return self.run_tail_generation(query)
         else:
             return self.run_worker_generation()
+        
+    def _drain_stale(self):
+        """
+        Discard leftover messages in socket buffers from previous generation.
+ 
+        After a generation ends, MSG_STOP or MSG_EOS may sit unread in the
+        buffers (e.g. tail sends EOS, master sends STOP, but neither reads
+        the other's final message). Without draining, the next generation
+        would read stale data and immediately break.
+        """
+        seen = set()
+        for conn in (self.upstream_conn, self.downstream_conn):
+            if conn is None or id(conn) in seen:
+                continue
+            seen.add(id(conn))
+            conn.setblocking(False)
+            try:
+                while True:
+                    data = conn.recv(65536)
+                    if not data:
+                        break
+                    print(f"[Peer] Drained {len(data)} stale bytes")
+            except (BlockingIOError, OSError):
+                pass
+            finally:
+                conn.setblocking(True)
 
     def run_master_generation(self, query, session=None):
         """
