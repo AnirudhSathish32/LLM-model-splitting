@@ -27,7 +27,7 @@ class UserQuery:
 # ═══════════════════════════════════════════════════════════════
  
 _cached_pipeline = None  # {"shared": SharedConfig, "peer_ips": [...], "master_ip": str}
- 
+
 # Local model cache (single-node path)
 _local_model = None
 _local_tokenizer = None
@@ -51,6 +51,7 @@ def clear_pipeline():
 
 def send_query(query, local: LocalConfig, session_manager, daemon_port=65433):
     import os
+    global  _cached_pipeline
     """
     Single entry point called by the frontend/API when the user
     sends a prompt. Orchestrates the entire flow:
@@ -66,6 +67,7 @@ def send_query(query, local: LocalConfig, session_manager, daemon_port=65433):
 
     session = session_manager.get_or_create(query.session_id)
     session.add_user_message(query.prompt)
+    query.messages = list(session.messages)
 
     print(f"\n[Orchestrator] Query received: '{query.prompt[:50]}...' "
           f"model={query.model_name} session={query.session_id}")
@@ -132,11 +134,19 @@ def send_query(query, local: LocalConfig, session_manager, daemon_port=65433):
 
     # Step 4: Send config to all peers, wait for ready, send start
     peer_ips = [entry["ip"] for entry in pipeline]
+    master_ip = pipeline[0]["ip"]
     send_shared_config_with_query(query, shared, peer_ips, daemon_port)
 
     # Step 5: Wait for response from tail
     print("[Orchestrator] Waiting for response...")
     response = receive_response_from_tail(shared.port)
+
+    _cached_pipeline = {
+        "shared": shared,
+        "peer_ips": peer_ips,
+        "master_ip": master_ip,
+        "local_only": False,
+    }
 
     # Step 6: Update session
     session.add_assistant_message(response, query.model_name)
