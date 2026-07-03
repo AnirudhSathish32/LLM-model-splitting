@@ -28,9 +28,22 @@ class UserQuery:
  
 _cached_pipeline = None  # {"shared": SharedConfig, "peer_ips": [...], "master_ip": str}
  
+# Local model cache (single-node path)
+_local_model = None
+_local_tokenizer = None
+ 
+ 
 def clear_pipeline():
-    global _cached_pipeline
+    global _cached_pipeline, _local_model, _local_tokenizer
     _cached_pipeline = None
+    if _local_model is not None:
+        del _local_model
+        _local_model = None
+    if _local_tokenizer is not None:
+        del _local_tokenizer
+        _local_tokenizer = None
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 # ═══════════════════════════════════════════════════════════════
 # ORCHESTRATION — the initiator's flow from query to inference
@@ -93,7 +106,21 @@ def send_query(query, local: LocalConfig, session_manager, daemon_port=65433):
 
     # Step 2: Build the pipeline
     model_path = os.path.join(local.model_path, query.model_name)
-    pipeline = build_pipeline(benchmarks, model_path)
+    pipeline = build_pipeline(benchmarks, model_path, overhead=local.overhead)
+
+    # ── Single node: bypass networking entirely ──────────
+    if len(pipeline) == 1:
+        print(f"[Orchestrator] Single node — running locally, no networking")
+        response = _run_local(query, local, session)
+ 
+        _cached_pipeline = {"local_only": True}
+ 
+        session.add_assistant_message(response, query.model_name)
+        session_manager.save_session(session)
+        print(f"[Orchestrator] Response received via local path ({len(response)} chars)")
+        return response
+    
+    # ── Multi-node: distribute config to peers ───────────
 
     # Step 3: Construct SharedConfig
     shared = SharedConfig(
@@ -116,6 +143,53 @@ def send_query(query, local: LocalConfig, session_manager, daemon_port=65433):
     session_manager.save_session(session)
 
     print(f"[Orchestrator] Response received ({len(response)} chars)")
+    return response
+
+# ═══════════════════════════════════════════════════════════════
+# LOCAL SINGLE-NODE PATH
+# ═══════════════════════════════════════════════════════════════
+ 
+def _run_local(query, local, session):
+    """
+    Run inference on a single machine — no pipeline splitting, no networking.
+    Model is cached between calls so subsequent turns skip loading.
+    """
+    import os
+    global _local_model, _local_tokenizer
+ 
+    model_dir = os.path.join(local.model_path, query.model_name)
+ 
+    # Load model on first call, reuse on subsequent calls
+    if _local_model is None:
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+        print(f"[Local] Loading full model from {model_dir}...")
+        _local_tokenizer = AutoTokenizer.from_pretrained(model_dir)
+        _local_model = AutoModelForCausalLM.from_pretrained(
+            model_dir, torch_dtype=query.dtype
+        ).to(local.device)
+        _local_model.eval()
+        print(f"[Local] Model loaded on {local.device}")
+ 
+    # Tokenize full conversation
+    prompt_text = _local_tokenizer.apply_chat_template(
+        session.messages, tokenize=False, add_generation_prompt=True,
+    )
+    inputs = _local_tokenizer(prompt_text, return_tensors="pt").to(local.device)
+    input_len = inputs.input_ids.shape[1]
+ 
+    # Generate
+    print(f"[Local] Generating {query.tokens_to_generate} tokens (input: {input_len} tokens)...")
+    with torch.no_grad():
+        outputs = _local_model.generate(
+            **inputs,
+            max_new_tokens=query.tokens_to_generate,
+            do_sample=False,
+        )
+ 
+    # Decode only the new tokens
+    new_tokens = outputs[0][input_len:]
+    response = _local_tokenizer.decode(new_tokens, skip_special_tokens=True)
+ 
     return response
 
 # ═══════════════════════════════════════════════════════════════

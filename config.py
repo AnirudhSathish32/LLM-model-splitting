@@ -18,6 +18,7 @@ class LocalConfig:
     device: str
     debug: bool
     tailscale_ip: str
+    overhead: float
 
     ### Paths Config ###
     model_path: str
@@ -36,6 +37,7 @@ class LocalConfig:
             "model_path": self.model_path,
             "debug": self.debug,
             "tailscale_ip": self.tailscale_ip,
+            "overhead": self.overhead
         }
         with open(path, "w") as f:
             json.dump(data, f, indent=2)
@@ -64,6 +66,7 @@ class LocalConfig:
                                 saved.get("model_path", "./models")),
             debug=os.getenv("DEBUG", str(saved.get("debug", False))).lower() == "true",
             tailscale_ip=os.getenv("TAILSCALE_IP", saved.get("tailscale_ip", "")),
+            overhead=float(os.getenv("OVERHEAD", saved.get("overhead", 0.2))),
         )
 
 # ================================================================

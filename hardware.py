@@ -37,7 +37,7 @@ def bytes_per_layer(config, dtype_bytes=2):
     return (attn + mlp) * dtype_bytes
 
 
-def build_pipeline(benchmarks, model_path, dtype_bytes=2, safety=0.8):
+def build_pipeline(benchmarks, model_path, dtype_bytes=2, overhead=0.2):
     """
     Given benchmark results from all participating machines, compute
     the optimal layer split and return the pipeline list for SharedConfig.
@@ -52,8 +52,8 @@ def build_pipeline(benchmarks, model_path, dtype_bytes=2, safety=0.8):
                     ]
         model_path: path to the HuggingFace model (for reading layer count + dims)
         dtype_bytes: bytes per parameter (2 for float16/bfloat16, 4 for float32)
-        safety: fraction of free memory to actually use (0.8 = 80%)
-                reserves 20% for KV cache growth, activations, OS overhead
+        overhead: fraction of free memory reserved for KV cache, activations, OS
+                  (0.2 = 20% reserved, 80% usable for weights)
 
     Returns:
         pipeline: list of dicts, ordered by chain position
@@ -63,6 +63,7 @@ def build_pipeline(benchmarks, model_path, dtype_bytes=2, safety=0.8):
     n_layers = config.num_hidden_layers
     per_layer = bytes_per_layer(config, dtype_bytes)
 
+    safety = 1.0 - overhead
     # ──────────────────────────────────────────────────────────
     # Step 1: Compute throughput and memory capacity for each peer
     # ──────────────────────────────────────────────────────────
