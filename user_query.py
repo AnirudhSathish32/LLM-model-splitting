@@ -16,6 +16,7 @@ class UserQuery:
     session_id: str
     tokens_to_generate: int
     dtype: torch.dtype = torch.float16
+    messages: list = None 
 
     # No property — dtype is a plain dataclass field.
     # Callers pass torch.float16 / torch.bfloat16 / torch.float32 directly.

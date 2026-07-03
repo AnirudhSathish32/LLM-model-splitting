@@ -1,5 +1,10 @@
 import uuid
 import time
+import json
+import os
+
+from config import LocalConfig
+
 
 class Session:
     def __init__(self, session_id=None, system_prompt=None):
@@ -32,14 +37,20 @@ class Session:
         if self.messages and self.messages[0]["role"] == "system":
             return self.messages[0]["content"]
         return None
-    
+
 
 class SessionManager:
-    def __init__(self, store, default_system_prompt=None, max_sessions=10):
-        self.store = store
+    def __init__(self, sessions_path=None, default_system_prompt=None, max_sessions=10):
+        self.sessions_path = sessions_path or LocalConfig.SESSION_PATH
         self.default_system_prompt = default_system_prompt
         self.max_sessions = max_sessions
         self.sessions = {}       # in-memory cache of active sessions
+
+        os.makedirs(self.sessions_path, exist_ok=True)
+
+    def _file_path(self, session_id):
+        safe_id = session_id.replace("/", "_").replace("\\", "_")
+        return os.path.join(self.sessions_path, f"{safe_id}.json")
 
     def get_or_create(self, session_id, system_prompt=None):
         # check in-memory first
@@ -47,7 +58,7 @@ class SessionManager:
             return self.sessions[session_id]
 
         # try loading from disk (previous app run)
-        session = self.store.load(session_id)
+        session = self._load_from_disk(session_id)
         if session:
             self.sessions[session_id] = session
             return session
@@ -58,34 +69,62 @@ class SessionManager:
             system_prompt=system_prompt or self.default_system_prompt,
         )
         self.sessions[session_id] = session
-        self.store.save(session)
+        self._save_to_disk(session)
 
         # evict oldest if over limit
         if len(self.sessions) > self.max_sessions:
-            evicted_id = self._evict_oldest()
-            # TODO: tell peers to purge caches for evicted_id
+            self._evict_oldest()
 
         return session
 
     def save_session(self, session):
         """Write-through: memory + disk."""
         self.sessions[session.session_id] = session
-        self.store.save(session)
+        self._save_to_disk(session)
 
     def delete_session(self, session_id):
         self.sessions.pop(session_id, None)
-        self.store.delete(session_id)
-        return session_id    # caller tells peers to purge caches
+        path = self._file_path(session_id)
+        if os.path.exists(path):
+            os.remove(path)
+        return session_id
 
     def list_sessions(self):
-        """For the frontend sidebar."""
-        return self.store.list_all()
+        """List all session IDs from disk."""
+        ids = []
+        for f in os.listdir(self.sessions_path):
+            if f.endswith(".json"):
+                ids.append(f[:-5])
+        return ids
+
+    def _save_to_disk(self, session):
+        data = {
+            "session_id": session.session_id,
+            "messages": session.messages,
+            "cached_token_count": session.cached_token_count,
+            "created_at": session.created_at,
+            "last_active": session.last_active,
+        }
+        with open(self._file_path(session.session_id), "w") as f:
+            json.dump(data, f, indent=2)
+
+    def _load_from_disk(self, session_id):
+        path = self._file_path(session_id)
+        if not os.path.exists(path):
+            return None
+        with open(path) as f:
+            data = json.load(f)
+        session = Session(session_id=data["session_id"])
+        session.messages = data["messages"]
+        session.cached_token_count = data.get("cached_token_count", 0)
+        session.created_at = data.get("created_at", time.time())
+        session.last_active = data.get("last_active", time.time())
+        return session
 
     def _evict_oldest(self):
         oldest_id = min(
             self.sessions,
             key=lambda sid: self.sessions[sid].last_active,
         )
-        self.sessions.pop(oldest_id)
-        self.store.delete(oldest_id)
+        self.delete_session(oldest_id)
         return oldest_id
