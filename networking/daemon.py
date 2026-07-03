@@ -166,7 +166,10 @@ class Daemon:
         if is_master:
             # Master needs a session to tokenize the conversation
             session = Session(session_id=query.session_id)
-            session.add_user_message(query.prompt)
+            if query.messages:
+                session.messages = query.messages
+            else:
+                session.add_user_message(query.prompt)
  
             response = peer.run_generation(query=query, session=session)
  
