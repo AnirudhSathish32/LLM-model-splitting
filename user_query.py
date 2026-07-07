@@ -26,24 +26,32 @@ class UserQuery:
 # PIPELINE CACHE — stored after first successful cold query
 # ═══════════════════════════════════════════════════════════════
  
-_cached_pipeline = None  # {"shared": SharedConfig, "peer_ips": [...], "master_ip": str}
+_cached_pipelines =  {}  # {"shared": SharedConfig, "peer_ips": [...], "master_ip": str, "local_only": bool}
 
 # Local model cache (single-node path)
-_local_model = None
-_local_tokenizer = None
+_local_models = {}       # {model_name: {"model": nn.Module, "tokenizer": tokenizer}}
  
  
-def clear_pipeline():
-    global _cached_pipeline, _local_model, _local_tokenizer
-    _cached_pipeline = None
-    if _local_model is not None:
-        del _local_model
-        _local_model = None
-    if _local_tokenizer is not None:
-        del _local_tokenizer
-        _local_tokenizer = None
+def clear_pipeline(model_name=None):
+    """Clear cached pipeline and local model. If model_name given, clear only that model."""
+    global _cached_pipelines, _local_models
+    if model_name:
+        _cached_pipelines.pop(model_name, None)
+        _free_local_model(model_name)
+    else:
+        _cached_pipelines.clear()
+        for name in list(_local_models.keys()):
+            _free_local_model(name)
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+ 
+ 
+def _free_local_model(model_name):
+    """Free a single local model from cache."""
+    entry = _local_models.pop(model_name, None)
+    if entry:
+        del entry["model"]
+        del entry["tokenizer"]
 
 # ═══════════════════════════════════════════════════════════════
 # ORCHESTRATION — the initiator's flow from query to inference
@@ -51,7 +59,7 @@ def clear_pipeline():
 
 def send_query(query, local: LocalConfig, session_manager, daemon_port=65433):
     import os
-    global  _cached_pipeline
+    global  _cached_pipelines
     """
     Single entry point called by the frontend/API when the user
     sends a prompt. Orchestrates the entire flow:
@@ -68,14 +76,20 @@ def send_query(query, local: LocalConfig, session_manager, daemon_port=65433):
     session = session_manager.get_or_create(query.session_id)
     session.add_user_message(query.prompt)
     query.messages = list(session.messages)
+    model_name = query.model_name
 
     print(f"\n[Orchestrator] Query received: '{query.prompt[:50]}...' "
           f"model={query.model_name} session={query.session_id}")
     
     # ── Warm path: try reusing existing pipeline ─────────
-    if _cached_pipeline is not None:
+    cached = _cached_pipelines.get(model_name)
+    if cached is not None:
         try:
-            response = _try_warm_query(query, _cached_pipeline, daemon_port)
+            if cached.get("local_only"):
+                print(f"[Orchestrator] Using cached local path for {model_name}")
+                response = _run_local(query, local, session)
+            else:
+                response = _try_warm_query(query, _cached_pipelines, daemon_port)
  
             session.add_assistant_message(response, query.model_name)
             session_manager.save_session(session)
@@ -85,7 +99,7 @@ def send_query(query, local: LocalConfig, session_manager, daemon_port=65433):
         except Exception as e:
             print(f"[Orchestrator] Warm path failed: {e}")
             print(f"[Orchestrator] Falling back to cold path")
-            _cached_pipeline = None
+            _cached_pipelines.pop(model_name, None)
  
     # ── Cold path: full discovery + pipeline setup ───────
  
@@ -115,7 +129,7 @@ def send_query(query, local: LocalConfig, session_manager, daemon_port=65433):
         print(f"[Orchestrator] Single node — running locally, no networking")
         response = _run_local(query, local, session)
  
-        _cached_pipeline = {"local_only": True}
+        _cached_pipelines = {"local_only": True}
  
         session.add_assistant_message(response, query.model_name)
         session_manager.save_session(session)
@@ -148,7 +162,7 @@ def send_query(query, local: LocalConfig, session_manager, daemon_port=65433):
  
     response = payload.decode("utf-8")
 
-    _cached_pipeline = {
+    _cached_pipelines = {
         "shared": shared,
         "peer_ips": peer_ips,
         "master_ip": master_ip,
@@ -172,32 +186,36 @@ def _run_local(query, local, session):
     Model is cached between calls so subsequent turns skip loading.
     """
     import os
-    global _local_model, _local_tokenizer
- 
+    global _local_models
+
+    model_name = query.model_name
     model_dir = os.path.join(local.model_path, query.model_name)
  
     # Load model on first call, reuse on subsequent calls
-    if _local_model is None:
+    if model_name not in _local_models:
         from transformers import AutoModelForCausalLM, AutoTokenizer
         print(f"[Local] Loading full model from {model_dir}...")
-        _local_tokenizer = AutoTokenizer.from_pretrained(model_dir)
-        _local_model = AutoModelForCausalLM.from_pretrained(
+        tokenizer = AutoTokenizer.from_pretrained(model_dir)
+        model = AutoModelForCausalLM.from_pretrained(
             model_dir, torch_dtype=query.dtype
         ).to(local.device)
-        _local_model.eval()
+        model.eval()
         print(f"[Local] Model loaded on {local.device}")
  
+    model = _local_models[model_name]["model"]
+    tokenizer = _local_models[model_name]["tokenizer"]
+
     # Tokenize full conversation
-    prompt_text = _local_tokenizer.apply_chat_template(
+    prompt_text = tokenizer.apply_chat_template(
         session.messages, tokenize=False, add_generation_prompt=True,
     )
-    inputs = _local_tokenizer(prompt_text, return_tensors="pt").to(local.device)
+    inputs = tokenizer(prompt_text, return_tensors="pt").to(local.device)
     input_len = inputs.input_ids.shape[1]
  
     # Generate
     print(f"[Local] Generating {query.tokens_to_generate} tokens (input: {input_len} tokens)...")
     with torch.no_grad():
-        outputs = _local_model.generate(
+        outputs = model.generate(
             **inputs,
             max_new_tokens=query.tokens_to_generate,
             do_sample=False,
@@ -205,7 +223,7 @@ def _run_local(query, local, session):
  
     # Decode only the new tokens
     new_tokens = outputs[0][input_len:]
-    response = _local_tokenizer.decode(new_tokens, skip_special_tokens=True)
+    response = tokenizer.decode(new_tokens, skip_special_tokens=True)
  
     return response
 

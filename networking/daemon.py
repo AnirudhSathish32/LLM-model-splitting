@@ -22,7 +22,8 @@ class Daemon:
         self.port = port
         self.running = False
         self.peer_lock = threading.Lock()
-        self.peer = None
+        self.peers = {}              # {model_name: InferencePeer}
+        self._peer_last_used = {}    # {model_name: float (timestamp)}
 
     def start(self):
         """Bind and listen. Blocks forever."""
@@ -119,6 +120,7 @@ class Daemon:
         bundle = torch.load(io.BytesIO(payload), map_location="cpu", weights_only=False)
         shared = from_bytes(SharedConfig, bundle["shared"])
         query = from_bytes(UserQuery, bundle["query"])
+        model_name = query.model_name
 
         # find our assignment
         my_ip = self.local.tailscale_ip
@@ -139,16 +141,20 @@ class Daemon:
 
         # tear down existing peer if one is running
         with self.peer_lock:
-            if self.peer is not None:
-                self.peer.cleanup()
-                self.peer = None
+            if model_name in self.peers:
+                self.peers[model_name].cleanup()
+                del self.peers[model_name]
+                del self._peer_last_used[model_name]
+
+            self._ensure_memory_headroom()
 
         # create peer, load model
         peer = InferencePeer(shared, self.local)
         peer.load_query_into_model(query)
 
         with self.peer_lock:
-            self.peer = peer
+            self.peers[model_name] = peer
+            self._peer_last_used[model_name] = time.time()
 
         # Phase 2: report ready, wait for start signal
         send_message(conn, MSG_READY)
@@ -190,9 +196,12 @@ class Daemon:
         from config import MSG_RESPONSE
  
         query = from_bytes(UserQuery, payload)
+        model_name = query.model_name
  
         with self.peer_lock:
-            peer = self.peer
+            peer = self.peers.get(model_name)
+            if peer is not None:
+                self._peer_last_used[model_name] = time.time()
  
         if peer is None or peer.model is None:
             print(f"[Daemon] No peer loaded — rejecting MSG_QUERY")
@@ -236,6 +245,45 @@ class Daemon:
         else:
             peer.run_generation(query=query)
             print(f"[Daemon] Warm query complete (tail/worker)")
+
+    def _get_memory_status(self):
+        """Returns (total_bytes, free_bytes) for the compute device."""
+        import psutil
+        device = self.local.device
+        if device.startswith("cuda"):
+            props = torch.cuda.get_device_properties(0)
+            total = props.total_memory
+            free = total - torch.cuda.memory_allocated(0)
+        else:
+            mem = psutil.virtual_memory()
+            total = mem.total
+            free = mem.available
+        return total, free
+ 
+    def _ensure_memory_headroom(self):
+        """Evict LRU models until free memory >= overhead * total."""
+        overhead = self.local.overhead
+        total, free = self._get_memory_status()
+        required_free = int(total * overhead)
+ 
+        while free < required_free and self._peer_last_used:
+            total_gb = total / 1e9
+            free_gb = free / 1e9
+            req_gb = required_free / 1e9
+            print(f"[Daemon] Memory tight: {free_gb:.1f}GB free < {req_gb:.1f}GB required "
+                  f"({overhead*100:.0f}% of {total_gb:.1f}GB)")
+            self._evict_lru_peer()
+            total, free = self._get_memory_status()
+ 
+    def _evict_lru_peer(self):
+        """Evict the least recently used model to free memory."""
+        if not self._peer_last_used:
+            return
+        oldest = min(self._peer_last_used, key=self._peer_last_used.get)
+        print(f"[Daemon] Evicting LRU model '{oldest}'")
+        self.peers[oldest].cleanup()
+        del self.peers[oldest]
+        del self._peer_last_used[oldest]
 
 
 # ================================================================

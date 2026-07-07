@@ -184,6 +184,7 @@ class InferencePeer:
         server.bind(("0.0.0.0", port))
         server.listen(1)
         conn, addr = server.accept()
+        conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         server.close()
         print(f"[Peer] Accepted connection from {addr} on port {port}")
         return conn
@@ -195,6 +196,7 @@ class InferencePeer:
             try:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 sock.connect((ip, port))
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 return sock
             except ConnectionRefusedError:
                 if attempt < max_retries - 1:
