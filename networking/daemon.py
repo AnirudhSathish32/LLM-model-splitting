@@ -24,6 +24,8 @@ class Daemon:
         self.peer_lock = threading.Lock()
         self.peers = {}              # {model_name: InferencePeer}
         self._peer_last_used = {}    # {model_name: float (timestamp)}
+        self.schedulers = {}         # {model_name: Scheduler} (master only)
+        self._gen_threads = {}       # {model_name: Thread} (worker/tail long-running loops)
 
     def start(self):
         """Bind and listen. Blocks forever."""
@@ -116,10 +118,12 @@ class Daemon:
         """Receive SharedConfig + Query, create InferencePeer, run generation."""
         from user_query import UserQuery
         from session import Session
+        from scheduler import Scheduler, InFlightRequest
 
         bundle = torch.load(io.BytesIO(payload), map_location="cpu", weights_only=False)
         shared = from_bytes(SharedConfig, bundle["shared"])
         query = from_bytes(UserQuery, bundle["query"])
+
         model_name = query.model_name
 
         # find our assignment
@@ -137,10 +141,13 @@ class Daemon:
 
         print(f"[Daemon] Role: {my_entry['role']}, "
               f"layers: {my_entry['layers'][0]}..{my_entry['layers'][1]}, "
-              f"model: {query.model_name}")
+              f"model: {model_name}")
 
-        # tear down existing peer if one is running
+        # tear down existing peer + scheduler for THIS model
         with self.peer_lock:
+            if model_name in self.schedulers:
+                self.schedulers[model_name].stop()
+                del self.schedulers[model_name]
             if model_name in self.peers:
                 self.peers[model_name].cleanup()
                 del self.peers[model_name]
@@ -165,86 +172,112 @@ class Daemon:
             print(f"[Daemon] Expected MSG_START, got {msg_type}")
             return
 
-        # Phase 3: connect to chain neighbors and run inference
+        # Phase 3: connect to chain neighbors
         print(f"[Daemon] Start signal received — connecting chain")
         peer.connect()
 
         if is_master:
-            # Master needs a session to tokenize the conversation
+            # Create Scheduler and start it in a dedicated thread
+            scheduler = Scheduler(peer)
+            sched_thread = threading.Thread(target=scheduler.run, daemon=True)
+            sched_thread.start()
+
+            with self.peer_lock:
+                self.schedulers[model_name] = scheduler
+
+            print(f"[Daemon] Scheduler started for {model_name}")
+
+            # Submit the first query through the Scheduler
             session = Session(session_id=query.session_id)
             if query.messages:
                 session.messages = query.messages
             else:
                 session.add_user_message(query.prompt)
- 
-            response = peer.run_generation(query=query, session=session)
- 
-            # Send response using the peer's dedicated out-of-band method
-            print(f"[Daemon] Generation complete — sending response ({len(response)} chars)")
+
+            cache_key = (query.session_id, model_name)
+            request = InFlightRequest(query, session, cache_key)
+            
+            print(f"[Scheduler] Submitting first request (session={query.session_id})")
+            scheduler.submit(request)
+            request.done_event.wait()
+
+            response = request.result
+            print(f"[Daemon] First query complete — sending MSG_RESPONSE ({len(response)} chars)")
             send_message(conn, MSG_RESPONSE, response.encode("utf-8"))
+            print(f"[Daemon] MSG_RESPONSE sent")
         else:
-            # Worker/tail — just run, no response to send
-            peer.run_generation(query=query)
+            # Worker/tail: start long-running generation loop in a thread
+            # The loop processes hidden states continuously until MSG_STOP
+            gen_thread = threading.Thread(
+                target=peer.run_generation,
+                kwargs={"query": query},
+                daemon=True,
+            )
+            gen_thread.start()
+            self._gen_threads[model_name] = gen_thread
+            print(f"[Daemon] {my_entry['role']} generation loop started (long-running)")
 
     def _handle_query(self, conn, payload):
         """
-        Handle a warm query — reuse existing peer, model, and connections.
-        No model reload, no chain reconnect. Just reset turn state and run.
+        Handle a warm query. Master submits to Scheduler.
+        Worker/tail just acknowledge — they're already in their long-running loops.
         """
         from user_query import UserQuery
         from session import Session
-        from config import MSG_RESPONSE
+        from scheduler import InFlightRequest
  
         query = from_bytes(UserQuery, payload)
         model_name = query.model_name
  
         with self.peer_lock:
             peer = self.peers.get(model_name)
+            scheduler = self.schedulers.get(model_name)
             if peer is not None:
                 self._peer_last_used[model_name] = time.time()
  
         if peer is None or peer.model is None:
-            print(f"[Daemon] No peer loaded — rejecting MSG_QUERY")
+            print(f"[Daemon] No peer for model '{model_name}' — rejecting MSG_QUERY")
             send_message(conn, MSG_QUERY_FAIL)
             return
- 
-        # Reset turn state but keep model, connections, and caches
-        peer.model.reset_turn_state()
- 
-        # Update cache key for this query's session
-        cache_key = (query.session_id, query.model_name)
-        if cache_key not in peer.caches:
-            peer.caches[cache_key] = None
-        peer._active_cache_key = cache_key
- 
+
         is_master = peer.is_master
- 
+
         # Synchronize: report ready, wait for start
         send_message(conn, MSG_READY)
-        print(f"[Daemon] Warm query ready (reusing peer, role={peer.role})")
+        print(f"[Daemon] Warm query ready (model={model_name}, role={peer.role})")
  
         msg_type, _ = read_message(conn)
         if msg_type != MSG_START:
             print(f"[Daemon] Expected MSG_START, got {msg_type}")
             return
- 
-        print(f"[Daemon] Warm query start — running generation")
- 
+
         if is_master:
+            if scheduler is None:
+                print(f"[Daemon] No scheduler for {model_name} — rejecting")
+                return
+
+            # Build session from query messages
             session = Session(session_id=query.session_id)
             if query.messages:
                 session.messages = query.messages
             else:
                 session.add_user_message(query.prompt)
  
-            response = peer.run_generation(query=query, session=session)
- 
+            cache_key = (query.session_id, model_name)
+            request = InFlightRequest(query, session, cache_key)
+
+            print(f"[Scheduler] Submitting warm request "
+                  f"(session={query.session_id}, active={scheduler.active_count()} in-flight)")
+            scheduler.submit(request)
+            request.done_event.wait()
+
+            response = request.result
             print(f"[Daemon] Warm query complete — sending MSG_RESPONSE ({len(response)} chars)")
             send_message(conn, MSG_RESPONSE, response.encode("utf-8"))
             print(f"[Daemon] MSG_RESPONSE sent")
         else:
-            peer.run_generation(query=query)
-            print(f"[Daemon] Warm query complete (tail/worker)")
+            # Worker/tail already in their long-running loops — nothing to do
+            print(f"[Daemon] Warm query ack — {peer.role} loop already running")
 
     def _get_memory_status(self):
         """Returns (total_bytes, free_bytes) for the compute device."""
@@ -259,13 +292,13 @@ class Daemon:
             total = mem.total
             free = mem.available
         return total, free
- 
+
     def _ensure_memory_headroom(self):
         """Evict LRU models until free memory >= overhead * total."""
         overhead = self.local.overhead
         total, free = self._get_memory_status()
         required_free = int(total * overhead)
- 
+
         while free < required_free and self._peer_last_used:
             total_gb = total / 1e9
             free_gb = free / 1e9
@@ -274,7 +307,7 @@ class Daemon:
                   f"({overhead*100:.0f}% of {total_gb:.1f}GB)")
             self._evict_lru_peer()
             total, free = self._get_memory_status()
- 
+
     def _evict_lru_peer(self):
         """Evict the least recently used model to free memory."""
         if not self._peer_last_used:

@@ -178,7 +178,7 @@ class InferencePeer:
             print(f"[Peer] Worker: downstream connected on port {port}")
 
     def _listen_accept(self, port):
-        """Bind, listen, accept one connection. SO_REUSEADDR applied."""
+        """Bind, listen, accept one connection. SO_REUSEADDR + TCP_NODELAY."""
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         server.bind(("0.0.0.0", port))
@@ -190,7 +190,7 @@ class InferencePeer:
         return conn
 
     def _connect_with_retry(self, ip, port, max_retries, retry_delay):
-        """Connect to a peer with exponential backoff retry."""
+        """Connect to a peer with exponential backoff retry. TCP_NODELAY set."""
         delay = retry_delay
         for attempt in range(max_retries):
             try:
@@ -213,20 +213,39 @@ class InferencePeer:
     # ================================================================
 
     def send_hidden(self, hidden, msg_type=MSG_FIRST_PASS):
-        """Send hidden state to downstream neighbor."""
-        payload = tensor_to_bytes(hidden)
+        """
+        Send hidden state to downstream neighbor.
+        Prepends session_id so the receiver can switch to the correct KV cache.
+        Format: [session_id_len:2][session_id:N][tensor_bytes]
+        """
+        session_id = self._active_cache_key[0] if self._active_cache_key else ""
+        sid_bytes = session_id.encode("utf-8")
+        tensor_bytes = tensor_to_bytes(hidden)
+        payload = struct.pack(">H", len(sid_bytes)) + sid_bytes + tensor_bytes
         send_message(self.downstream_conn, msg_type, payload)
 
     def receive_hidden(self):
         """
         Receive hidden state from upstream neighbor.
+        Extracts session_id and switches active cache before returning.
         Returns (msg_type, hidden_tensor).
-        msg_type is MSG_FIRST_PASS, MSG_NEXT_PASS, or MSG_STOP.
         """
         msg_type, payload = read_message(self.upstream_conn)
         if msg_type == MSG_STOP:
             return MSG_STOP, None
-        hidden = tensor_from_bytes(payload, device=self.model.device)
+
+        # Extract session_id prefix
+        sid_len = struct.unpack(">H", payload[:2])[0]
+        session_id = payload[2:2 + sid_len].decode("utf-8")
+        tensor_bytes = payload[2 + sid_len:]
+
+        # Switch active cache to this session
+        cache_key = (session_id, self.loaded_model_name)
+        if cache_key not in self.caches:
+            self.caches[cache_key] = None
+        self._active_cache_key = cache_key
+
+        hidden = tensor_from_bytes(tensor_bytes, device=self.model.device)
         return msg_type, hidden
 
     def send_token(self, token):
@@ -304,163 +323,183 @@ class InferencePeer:
 
     def run_master_generation(self, query, session=None):
         """
-        Master loop:
-        1. Tokenize full conversation → input_ids
-        2. If cache is warm, skip tokens already in cache (feed only new ones)
-        3. Forward through master layers (StopIteration captures hidden)
-        4. Send hidden downstream
-        5. Receive token from upstream (tail → master circular path)
-        6. Append token, repeat until EOS or max tokens
-        7. On EOS: send MSG_STOP downstream to unblock workers
+        Blocking master generation — runs all steps to completion.
+        Used by daemon for single-query mode (no Scheduler).
+        Sends MSG_STOP when done to tear down the chain.
         """
-        cache = self._get_cache()
+        from scheduler import InFlightRequest
 
-        # Build input from session messages if available, else raw prompt
-        if session is not None:
-            messages = session.messages
-        else:
-            messages = [{"role": "user", "content": query.prompt}]
+        request = InFlightRequest(query, session, self._active_cache_key)
+        self.prepare_request(request)
 
-        print("[Master] Attempting to Tokenize")
-        full_sequence_ids = self.model.tokenize(messages).to(self.model.device)
-        print("[Master] Tokenize succeessfuly")
-
-        # ── Warm cache: skip tokens the cache already covers ──
-        cache_len = cache.get_seq_length() if cache is not None else 0
-        total_len = full_sequence_ids.shape[1]
-
-        if cache_len > 0 and cache_len < total_len:
-            # Resume — only prefill the new tokens
-            first_pass_input = full_sequence_ids[:, cache_len:]
-            print(f"[Master] Warm cache: {cache_len} cached, "
-                  f"{total_len - cache_len} new tokens to prefill")
-        elif cache_len >= total_len and cache_len > 0:
-            # Cache covers everything or more — shouldn't happen, invalidate
-            print(f"[Master] Cache invalidated: cache_len={cache_len} >= input_len={total_len}")
-            cache = None
-            first_pass_input = full_sequence_ids
-        else:
-            # Cold start
-            first_pass_input = full_sequence_ids
-
-        first_pass = True
-        token_count = 0
         ttft_start = time.perf_counter()
         ttft = None
 
-        print(f"[Master] Starting generation loop — max {query.tokens_to_generate} tokens, "
-              f"input shape: {full_sequence_ids.shape}")
-
-        while token_count < query.tokens_to_generate:
-            self.model.pass_counter["i"] = token_count
-
-            if first_pass:
-                model_input = first_pass_input
-            else:
-                model_input = full_sequence_ids[:, -1:]
-
-            print(f"[Master] Token {token_count}: forward (input shape {model_input.shape})...")
-            hidden, cache = self.model.forward(model_input, cache)
-            print(f"[Master] Token {token_count}: forward done, hidden shape {hidden.shape}")
-
-            msg_type = MSG_FIRST_PASS if first_pass else MSG_NEXT_PASS
-            print(f"[Master] Token {token_count}: sending hidden to tail...")
-            self.send_hidden(hidden, msg_type)
-            first_pass = False
-            print(f"[Master] Token {token_count}: hidden sent, waiting for token from tail...")
-
-            # receive token from tail (via circular upstream connection)
-            msg_string, token = self.receive_token()
-            print(f"[Master] Token {token_count}: received '{msg_string}' from tail")
-
+        while self.step_master(request):
             if ttft is None:
                 ttft = time.perf_counter() - ttft_start
 
-            if msg_string == "eos":
-                # propagate stop down the chain so workers unblock
-                print(f"[Master] EOS received — sending stop downstream")
-                self.send_stop()
-                break
+        if ttft is None:
+            ttft = time.perf_counter() - ttft_start
 
-            self.model.generated_ids.append(token.item())
-            decoded_so_far = self.model.decode(self.model.generated_ids)
-            print(f"[Master] Token {token_count}: id={token.item()}, "
-                  f"text so far: '{decoded_so_far}'")
-            full_sequence_ids = torch.cat(
-                [full_sequence_ids, token.unsqueeze(0).to(full_sequence_ids.device)],
-                dim=-1,
-            )
-            token_count += 1
+        # Single-query mode: stop the chain now
+        self.send_stop()
 
-        # If we hit max tokens without EOS, still stop the pipeline
-        if token_count >= query.tokens_to_generate:
-            print(f"[Master] Max tokens reached — sending stop downstream")
-            self.send_stop()
+        response = self.model.decode(request.generated_ids)
 
-        self._set_cache(cache)
-        response = self.model.decode(self.model.generated_ids)
-        print(f"[Master] Generation complete — {token_count} tokens")
-
-        if ttft is not None:
-            print(f"[Master] TTFT: {ttft*1000:.1f}ms, "
-                  f"tokens: {token_count}, total: {(time.perf_counter()-ttft_start)*1000:.1f}ms")
+        print(f"[Master] Generation complete — {request.token_count} tokens")
+        print(f"[Master] TTFT: {ttft*1000:.1f}ms, "
+              f"total: {(time.perf_counter()-ttft_start)*1000:.1f}ms")
 
         return response
 
+    def prepare_request(self, request):
+        """
+        Tokenize and set up first pass for a new request.
+        Called once per request, before the first step_master call.
+        """
+        self._drain_stale()
+        self._active_cache_key = request.cache_key
+
+        # Get existing cache for this session+model (None on first query)
+        request.cache = self._get_cache()
+
+        # Tokenize full conversation
+        if request.session is not None:
+            messages = request.session.messages
+        else:
+            messages = [{"role": "user", "content": request.query.prompt}]
+
+        request.full_sequence_ids = self.model.tokenize(messages).to(self.model.device)
+
+        # Warm cache: skip tokens already cached
+        cache_len = request.cache.get_seq_length() if request.cache is not None else 0
+        total_len = request.full_sequence_ids.shape[1]
+
+        if cache_len > 0 and cache_len < total_len:
+            request.first_pass_input = request.full_sequence_ids[:, cache_len:]
+            print(f"[Master] Warm cache: {cache_len} cached, "
+                  f"{total_len - cache_len} new tokens to prefill")
+        elif cache_len >= total_len and cache_len > 0:
+            print(f"[Master] Cache invalidated: cache_len={cache_len} >= input_len={total_len}")
+            request.cache = None
+            request.first_pass_input = request.full_sequence_ids
+        else:
+            request.first_pass_input = request.full_sequence_ids
+
+        request.first_pass = True
+        request.token_count = 0
+        request.generated_ids = []
+
+        print(f"[Master] Request prepared — {total_len} input tokens, "
+              f"max {request.query.tokens_to_generate} to generate")
+
+    def step_master(self, request):
+        """
+        One forward step for the master. Advances the request by one token.
+
+        Returns True if the request needs more steps, False if done
+        (EOS received or max tokens reached).
+
+        Does NOT send MSG_STOP — the caller (run_master_generation or
+        Scheduler) decides when to stop the pipeline.
+        """
+        import torch
+
+        # Activate this request's cache
+        self._active_cache_key = request.cache_key
+        self.model.pass_counter["i"] = request.token_count
+
+        # Determine input
+        if request.first_pass:
+            model_input = request.first_pass_input
+        else:
+            model_input = request.full_sequence_ids[:, -1:]
+
+        # Forward through master layers
+        hidden, request.cache = self.model.forward(model_input, request.cache)
+
+        # Send hidden downstream
+        msg_type = MSG_FIRST_PASS if request.first_pass else MSG_NEXT_PASS
+        self.send_hidden(hidden, msg_type)
+        request.first_pass = False
+
+        # Receive token from tail
+        msg_string, token = self.receive_token()
+
+        if msg_string == "eos":
+            self.caches[request.cache_key] = request.cache
+            return False
+
+        # Append token and update state
+        request.generated_ids.append(token.item())
+        request.full_sequence_ids = torch.cat(
+            [request.full_sequence_ids, token.unsqueeze(0).to(request.full_sequence_ids.device)],
+            dim=-1,
+        )
+        request.token_count += 1
+
+        if request.token_count >= request.query.tokens_to_generate:
+            self.caches[request.cache_key] = request.cache
+            return False
+
+        return True
+
     def run_worker_generation(self):
         """
-        Worker loop:
-        1. Receive hidden from upstream
-        2. Forward through worker layers
-        3. Send hidden downstream
-        4. Break on MSG_STOP
+        Worker loop with per-step cache switching.
+        receive_hidden extracts the session_id and sets _active_cache_key,
+        so each step uses the correct cache for the current request.
         """
-        cache = self._get_cache()
-
         while True:
             msg_type, hidden = self.receive_hidden()
 
             if msg_type == MSG_STOP:
-                # propagate stop to next node in chain
                 self.send_stop()
                 break
+
+            # _active_cache_key was set by receive_hidden
+            cache = self._get_cache()
 
             hidden = hidden.to(self.model.device)
             self.model.pass_counter["i"] += 1
 
             hidden, cache = self.model.forward(hidden, cache)
 
+            self._set_cache(cache)
             self.send_hidden(hidden, msg_type)
-
-        self._set_cache(cache)
 
     def run_tail_generation(self, query=None):
         """
-        Tail loop:
-        1. Receive hidden from upstream
-        2. Forward through tail layers + lm_head → token
-        3. Send token downstream (back to master via circular path)
-        4. Break on EOS or max tokens, or MSG_STOP from upstream
-        """
-        cache = self._get_cache()
-        token_count = 0
-        max_tokens = query.tokens_to_generate if query else 256
+        Long-running tail loop. Processes hidden states continuously,
+        switching caches via session tags from receive_hidden.
 
-        print(f"[Tail] Starting generation loop — max {max_tokens} tokens")
+        On EOS: sends MSG_EOS to master and continues (does NOT break).
+        On MSG_STOP: breaks and exits (pipeline shutdown).
+
+        The master controls max_tokens — the tail just processes
+        whatever hidden states arrive.
+        """
+        token_count = 0
+
+        print(f"[Tail] Starting generation loop (long-running)")
 
         while True:
             msg_type, hidden = self.receive_hidden()
 
             if msg_type == MSG_STOP:
-                print(f"[Tail] Received MSG_STOP — breaking")
+                print(f"[Tail] Received MSG_STOP — shutting down")
                 break
 
+            # _active_cache_key was set by receive_hidden
+            cache = self._get_cache()
+
             hidden = hidden.to(self.model.device)
-            print(f"[Tail] Token {token_count}: received hidden shape {hidden.shape}, forwarding...")
             self.model.pass_counter["i"] = token_count
 
             token, cache = self.model.forward(hidden, cache)
-            print(f"[Tail] Token {token_count}: forward done, token_id={token.item()}")
+
+            self._set_cache(cache)
 
             # check EOS
             eos_ids = self.model.tokenizer.eos_token_id
@@ -468,23 +507,14 @@ class InferencePeer:
                 eos_ids = [eos_ids]
 
             if token.item() in eos_ids:
-                print(f"[Tail] EOS token detected — sending EOS to master")
+                print(f"[Tail] EOS token detected — sending EOS (staying in loop)")
                 self.send_eos()
-                break
+                continue    # ← stay in loop, master decides what's next
 
-            self.model.generated_ids.append(token.item())
-            print(f"[Tail] Token {token_count}: sending token to master...")
             self.send_token(token)
-            print(f"[Tail] Token {token_count}: token sent")
             token_count += 1
 
-            if token_count >= max_tokens:
-                print(f"[Tail] Max tokens reached — sending EOS to master")
-                self.send_eos()
-                break
-
-        self._set_cache(cache)
-        print(f"[Tail] Generation complete — {token_count} tokens")
+        print(f"[Tail] Loop exited — {token_count} total tokens generated")
 
     # ================================================================
     # CLEANUP
