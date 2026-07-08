@@ -33,13 +33,13 @@ class InFlightRequest:
         self.session = session
         self.cache_key = cache_key
 
-        # generation state
+        # generation state (moved from Model + loop locals)
         self.generated_ids = []
         self.full_sequence_ids = None   # set by prepare_request
         self.first_pass_input = None    # set by prepare_request (warm cache slice)
         self.first_pass = True
         self.token_count = 0
-        self.cache = None
+        self.cache = None               # DynamicCache, set by prepare_request
 
         # lifecycle
         self.status = "pending"         # pending → running → done
@@ -88,10 +88,13 @@ class Scheduler:
         self._lock = threading.Lock()
         self._has_work = threading.Event()
         self.running = False
-        
+        self._draining = False
 
     def submit(self, request):
-        """Add a request to the queue. Thread-safe, non-blocking."""
+        """Add a request to the queue. Thread-safe, non-blocking.
+        Raises if the Scheduler is draining for a rebuild."""
+        if self._draining:
+            raise RuntimeError("Scheduler is draining for pipeline rebuild — retry after rebuild")
         with self._lock:
             self.requests.append(request)
         self._has_work.set()
@@ -164,7 +167,23 @@ class Scheduler:
         with self._lock:
             return len(self.requests)
 
+    def drain(self):
+        """
+        Block until all in-flight requests complete.
+        Rejects new submissions while draining.
+        Call before pipeline teardown to avoid killing active generation.
+        """
+        self._draining = True
+        count = self.active_count()
+        if count > 0:
+            print(f"[Scheduler] Draining {count} in-flight requests...")
+        while self.active_count() > 0:
+            time.sleep(0.1)
+        if count > 0:
+            print(f"[Scheduler] Drain complete")
+        self._draining = False
+
     def stop(self):
-        """Signal the scheduler loop to exit."""
+        """Signal the scheduler loop to exit. Call drain() first if requests may be active."""
         self.running = False
         self._has_work.set()

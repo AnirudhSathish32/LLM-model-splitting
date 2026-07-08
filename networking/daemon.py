@@ -146,12 +146,22 @@ class Daemon:
         # tear down existing peer + scheduler for THIS model
         with self.peer_lock:
             if model_name in self.schedulers:
+                print(f"[Daemon] Draining scheduler for {model_name} before rebuild...")
+                self.schedulers[model_name].drain()
                 self.schedulers[model_name].stop()
                 del self.schedulers[model_name]
+                print(f"[Daemon] Scheduler torn down")
             if model_name in self.peers:
+                # Send MSG_STOP to break worker/tail loops before cleanup
+                try:
+                    self.peers[model_name].send_stop()
+                except Exception:
+                    pass
                 self.peers[model_name].cleanup()
                 del self.peers[model_name]
                 del self._peer_last_used[model_name]
+            if model_name in self._gen_threads:
+                del self._gen_threads[model_name]
 
             self._ensure_memory_headroom()
 
