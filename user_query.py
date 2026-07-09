@@ -2,6 +2,8 @@ from dataclasses import dataclass, field
 import torch
 import socket
 import threading
+import time
+import os
 
 from hardware import build_pipeline
 from config import SharedConfig, LocalConfig, MSG_CONFIG, MSG_READY, MSG_START, MSG_RESPONSE, MSG_QUERY, MSG_QUERY_FAIL
@@ -23,15 +25,51 @@ class UserQuery:
 
 
 # ═══════════════════════════════════════════════════════════════
-# PIPELINE CACHE — stored after first successful cold query
+# PIPELINE CACHE — per-model, stored after first successful cold query
 # ═══════════════════════════════════════════════════════════════
- 
-_cached_pipelines =  {}  # {"shared": SharedConfig, "peer_ips": [...], "master_ip": str, "local_only": bool}
 
-# Local model cache (single-node path)
+_cached_pipelines = {}   # {model_name: {"shared": ..., "peer_ips": [...], "master_ip": str, "local_only": bool}}
+
+# Local model cache (single-node path, per-model)
 _local_models = {}       # {model_name: {"model": nn.Module, "tokenizer": tokenizer}}
- 
- 
+
+# Discovery monitor state
+_DISCOVERY_INTERVAL = 30   # seconds between peer checks (internal, not user-configurable)
+_pipeline_invalidated = False
+_known_peers = set()
+_monitor_started = False
+
+
+def _start_discovery_monitor():
+    """Start background thread that watches for peer changes."""
+    global _monitor_started
+    if _monitor_started:
+        return
+    _monitor_started = True
+
+    def monitor_loop():
+        global _pipeline_invalidated, _known_peers
+        from networking.tailscale import get_online_peers
+
+        while True:
+            time.sleep(_DISCOVERY_INTERVAL)
+            try:
+                current = set(p["ip"] for p in get_online_peers())
+                if _known_peers and current != _known_peers:
+                    added = current - _known_peers
+                    removed = _known_peers - current
+                    print(f"[Discovery Monitor] Peer change detected — "
+                          f"added: {added or 'none'}, removed: {removed or 'none'}")
+                    _pipeline_invalidated = True
+                _known_peers = current
+            except Exception as e:
+                print(f"[Discovery Monitor] Check failed: {e}")
+
+    t = threading.Thread(target=monitor_loop, daemon=True)
+    t.start()
+    print(f"[Discovery Monitor] Started (checking every {_DISCOVERY_INTERVAL}s)")
+
+
 def clear_pipeline(model_name=None):
     """Clear cached pipeline and local model. If model_name given, clear only that model."""
     global _cached_pipelines, _local_models
@@ -44,8 +82,8 @@ def clear_pipeline(model_name=None):
             _free_local_model(name)
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
- 
- 
+
+
 def _free_local_model(model_name):
     """Free a single local model from cache."""
     entry = _local_models.pop(model_name, None)
@@ -58,30 +96,33 @@ def _free_local_model(model_name):
 # ═══════════════════════════════════════════════════════════════
 
 def send_query(query, local: LocalConfig, session_manager, daemon_port=65433):
-    import os
-    global  _cached_pipelines
+    global _cached_pipelines, _pipeline_invalidated, _known_peers
     """
-    Single entry point called by the frontend/API when the user
-    sends a prompt. Orchestrates the entire flow:
-
-    1. Discover available peers and collect benchmarks
-    2. Build the pipeline (compute the split)
-    3. Construct SharedConfig
-    4. Distribute config to all peers (they load models + connect)
-    5. Receive the response from the tail
-    6. Update the session and return the response
+    Single entry point. Looks up cached pipeline for this model.
+    Warm path if found, cold path if not.
+    Discovery monitor checks for peer changes in the background.
     """
     from networking.daemon import discover_and_collect
+
+    # Start discovery monitor on first call
+    _start_discovery_monitor()
 
     session = session_manager.get_or_create(query.session_id)
     session.add_user_message(query.prompt)
     query.messages = list(session.messages)
+
     model_name = query.model_name
 
-    print(f"\n[Orchestrator] Query received: '{query.prompt[:50]}...' "
-          f"model={query.model_name} session={query.session_id}")
+    print(f"\n[Orchestrator] Query: '{query.prompt[:50]}...' "
+          f"model={model_name} session={query.session_id}")
+
+    # ── Check if discovery monitor detected a peer change ──
+    if _pipeline_invalidated:
+        print(f"[Orchestrator] Peer change detected — invalidating all cached pipelines")
+        _cached_pipelines.clear()
+        _pipeline_invalidated = False
     
-    # ── Warm path: try reusing existing pipeline ─────────
+    # ── Warm path: try reusing existing pipeline for this model ──
     cached = _cached_pipelines.get(model_name)
     if cached is not None:
         try:
@@ -89,39 +130,39 @@ def send_query(query, local: LocalConfig, session_manager, daemon_port=65433):
                 print(f"[Orchestrator] Using cached local path for {model_name}")
                 response = _run_local(query, local, session)
             else:
-                response = _try_warm_query(query, _cached_pipelines, daemon_port)
- 
-            session.add_assistant_message(response, query.model_name)
+                response = _try_warm_query(query, cached, daemon_port)
+
+            session.add_assistant_message(response, model_name)
             session_manager.save_session(session)
             print(f"[Orchestrator] Response received via warm path ({len(response)} chars)")
             return response
  
         except Exception as e:
-            print(f"[Orchestrator] Warm path failed: {e}")
+            print(f"[Orchestrator] Warm path failed for {model_name}: {e}")
             print(f"[Orchestrator] Falling back to cold path")
             _cached_pipelines.pop(model_name, None)
  
     # ── Cold path: full discovery + pipeline setup ───────
  
-    print(f"[Orchestrator] Running cold path (discovery + setup)")
+    print(f"[Orchestrator] Running cold path for {model_name}")
 
     # Step 1: Discover peers and collect benchmarks
     benchmarks, unavailable = discover_and_collect(
-        query.model_name, daemon_port=daemon_port,
+        model_name, daemon_port=daemon_port,
     )
 
     if not benchmarks:
         raise RuntimeError(
-            f"No peers have benchmarks for '{query.model_name}'. "
+            f"No peers have benchmarks for '{model_name}'. "
             f"Run benchmark.py on at least one machine first."
         )
 
     if unavailable:
         print(f"[Orchestrator] {len(unavailable)} peers skipped "
-              f"(no benchmark for {query.model_name})")
+              f"(no benchmark for {model_name})")
 
     # Step 2: Build the pipeline
-    model_path = os.path.join(local.model_path, query.model_name)
+    model_path = os.path.join(local.model_path, model_name)
     pipeline = build_pipeline(benchmarks, model_path, overhead=local.overhead)
 
     # ── Single node: bypass networking entirely ──────────
@@ -129,9 +170,9 @@ def send_query(query, local: LocalConfig, session_manager, daemon_port=65433):
         print(f"[Orchestrator] Single node — running locally, no networking")
         response = _run_local(query, local, session)
  
-        _cached_pipelines = {"local_only": True}
+        _cached_pipelines[model_name] = {"local_only": True}
  
-        session.add_assistant_message(response, query.model_name)
+        session.add_assistant_message(response, model_name)
         session_manager.save_session(session)
         print(f"[Orchestrator] Response received via local path ({len(response)} chars)")
         return response
@@ -146,23 +187,46 @@ def send_query(query, local: LocalConfig, session_manager, daemon_port=65433):
         pipeline=pipeline,
     )
 
-    # Step 4: Send config to all peers, wait for ready, send start
+    # Step 4+5: Send config to peers, read response from master's
+    # control connection. Retry once if the connection drops or the
+    # daemon rejects — covers races during concurrent cold starts
+    # (the daemon may still be finishing another orchestrator's setup).
     peer_ips = [entry["ip"] for entry in pipeline]
     master_ip = pipeline[0]["ip"]
-    master_conn = send_shared_config_with_query(query, shared, peer_ips, daemon_port)
 
-    # Step 5: Wait for response from tail
-    print("[Orchestrator] Waiting for response...")
-    master_conn.settimeout(300)
-    msg_type, payload = read_message(master_conn)
-    master_conn.close()
+    response = None
+    max_attempts = 3
+    for attempt in range(max_attempts):
+        try:
+            master_conn = send_shared_config_with_query(query, shared, peer_ips, daemon_port)
 
-    if msg_type != MSG_RESPONSE:
-        raise ValueError(f"Expected MSG_RESPONSE from master, got {msg_type}")
- 
-    response = payload.decode("utf-8")
+            print("[Orchestrator] Waiting for response...")
+            master_conn.settimeout(300)
+            msg_type, payload = read_message(master_conn)
+            master_conn.close()
 
-    _cached_pipelines = {
+            if msg_type == MSG_RESPONSE:
+                response = payload.decode("utf-8")
+                break
+            elif msg_type == MSG_QUERY_FAIL:
+                print(f"[Orchestrator] Daemon rejected query (attempt {attempt+1}/{max_attempts}) "
+                      f"— retrying in 2s...")
+                time.sleep(2)
+            else:
+                raise ValueError(f"Expected MSG_RESPONSE, got {msg_type}")
+
+        except (ConnectionError, TimeoutError) as e:
+            if attempt < max_attempts - 1:
+                print(f"[Orchestrator] Connection dropped (attempt {attempt+1}/{max_attempts}): {e} "
+                      f"— retrying in 2s...")
+                time.sleep(2)
+            else:
+                raise
+
+    if response is None:
+        raise RuntimeError(f"Query failed after {max_attempts} attempts")
+
+    _cached_pipelines[model_name] = {
         "shared": shared,
         "peer_ips": peer_ips,
         "master_ip": master_ip,
@@ -170,7 +234,7 @@ def send_query(query, local: LocalConfig, session_manager, daemon_port=65433):
     }
 
     # Step 6: Update session
-    session.add_assistant_message(response, query.model_name)
+    session.add_assistant_message(response, model_name)
     session_manager.save_session(session)
 
     print(f"[Orchestrator] Response received ({len(response)} chars)")
@@ -183,26 +247,26 @@ def send_query(query, local: LocalConfig, session_manager, daemon_port=65433):
 def _run_local(query, local, session):
     """
     Run inference on a single machine — no pipeline splitting, no networking.
-    Model is cached between calls so subsequent turns skip loading.
+    Model is cached per model_name so switching models doesn't reload.
     """
     import os
     global _local_models
 
     model_name = query.model_name
-    model_dir = os.path.join(local.model_path, query.model_name)
- 
-    # Load model on first call, reuse on subsequent calls
+    model_dir = os.path.join(local.model_path, model_name)
+
+    # Load model on first call for this model, reuse on subsequent calls
     if model_name not in _local_models:
         from transformers import AutoModelForCausalLM, AutoTokenizer
         print(f"[Local] Loading full model from {model_dir}...")
         tokenizer = AutoTokenizer.from_pretrained(model_dir)
         model = AutoModelForCausalLM.from_pretrained(
-            model_dir, torch_dtype=query.dtype
+            model_dir, dtype=query.dtype
         ).to(local.device)
         model.eval()
         _local_models[model_name] = {"model": model, "tokenizer": tokenizer}
-        print(f"[Local] Model loaded on {local.device}")
- 
+        print(f"[Local] {model_name} loaded on {local.device}")
+
     model = _local_models[model_name]["model"]
     tokenizer = _local_models[model_name]["tokenizer"]
 
@@ -212,7 +276,7 @@ def _run_local(query, local, session):
     )
     inputs = tokenizer(prompt_text, return_tensors="pt").to(local.device)
     input_len = inputs.input_ids.shape[1]
- 
+
     # Generate
     print(f"[Local] Generating {query.tokens_to_generate} tokens (input: {input_len} tokens)...")
     with torch.no_grad():
@@ -221,7 +285,7 @@ def _run_local(query, local, session):
             max_new_tokens=query.tokens_to_generate,
             do_sample=False,
         )
- 
+
     # Decode only the new tokens
     new_tokens = outputs[0][input_len:]
     response = tokenizer.decode(new_tokens, skip_special_tokens=True)
@@ -313,6 +377,8 @@ def send_shared_config_with_query(query, shared, peer_ips, daemon_port=65433):
     """
     Send the SharedConfig + Query bundle to every peer in the pipeline.
     Wait for all to report READY, then send START to all.
+    Returns the master's control connection (kept open — caller reads
+    MSG_RESPONSE from it after generation completes).
     """
     bundle = {
         "shared": to_bytes(shared),
@@ -363,7 +429,6 @@ def send_shared_config_with_query(query, shared, peer_ips, daemon_port=65433):
         send_message(sock, MSG_START)
         if ip != master_ip:
             sock.close()
-    
 
     print(f"[Orchestrator] Pipeline is live")
     return connections[master_ip]

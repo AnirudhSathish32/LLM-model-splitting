@@ -311,9 +311,27 @@ class Daemon:
             return
 
         if is_master:
+            # The peer may exist while its creating thread is still in
+            # connect() or hasn't created the Scheduler yet (concurrent
+            # cold starts). Wait for the scheduler to come up rather
+            # than rejecting — the creating thread is actively building it.
+            waited = 0.0
+            while scheduler is None and waited < 120.0:
+                if waited == 0.0:
+                    print(f"[Daemon] Scheduler for {model_name} not ready yet — "
+                          f"waiting for pipeline setup to complete...")
+                time.sleep(0.5)
+                waited += 0.5
+                with self.peer_lock:
+                    scheduler = self.schedulers.get(model_name)
+
             if scheduler is None:
-                print(f"[Daemon] No scheduler for {model_name} — rejecting")
+                print(f"[Daemon] Scheduler for {model_name} never came up — rejecting")
+                send_message(conn, MSG_QUERY_FAIL)
                 return
+
+            if waited > 0:
+                print(f"[Daemon] Scheduler ready after {waited:.1f}s — proceeding")
 
             # Build session from query messages
             session = Session(session_id=query.session_id)
@@ -339,6 +357,7 @@ class Daemon:
                         scheduler = self.schedulers.get(model_name)
                     if scheduler is None:
                         print(f"[Daemon] Scheduler gone after drain — rejecting")
+                        send_message(conn, MSG_QUERY_FAIL)
                         return
 
             request.done_event.wait()
