@@ -19,9 +19,9 @@ from user_query import UserQuery, send_query, clear_pipeline
 from session import SessionManager
 
 
-MODEL_NAME = "llama-8b"
+MODEL_NAME = "llama-3b"
 TOKENS = 50
-SESSION_ID = "interactive"
+SESSION_ID = "testing thread"
 
 _query_counter = 0
 _query_lock = threading.Lock()

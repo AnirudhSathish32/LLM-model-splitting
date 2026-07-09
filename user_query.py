@@ -200,6 +200,7 @@ def _run_local(query, local, session):
             model_dir, torch_dtype=query.dtype
         ).to(local.device)
         model.eval()
+        _local_models[model_name] = {"model": model, "tokenizer": tokenizer}
         print(f"[Local] Model loaded on {local.device}")
  
     model = _local_models[model_name]["model"]
