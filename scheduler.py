@@ -46,21 +46,7 @@ class InFlightRequest:
         self.result = None              # response string, set when done
         self.done_event = threading.Event()
         self.created_at = time.time()
-        self.last_stepped_at = 0.0      # for round-robin within same priority
-
-    @property
-    def priority(self):
-        """
-        Lower number = higher priority.
-        Decode steps go before prefill — they're cheaper and keep
-        all users' token streams flowing.
-        """
-        if self.status == "running" and not self.first_pass:
-            return 0    # decode step (single token input)
-        elif self.status == "running" and self.first_pass:
-            return 1    # prefill step (full sequence input)
-        else:
-            return 2    # pending (not yet started)
+        self.last_stepped_at = 0.0      # 0.0 = never stepped → picked first (round-robin)
 
 
 class Scheduler:
@@ -147,20 +133,23 @@ class Scheduler:
 
     def _pick_next(self):
         """
-        Pick the next request to step.
+        Pick the next request to step: least recently stepped first.
 
-        Priority order:
-          1. Decode steps (status=running, first_pass=False) — cheapest, keeps streams alive
-          2. Prefill steps (status=running, first_pass=True) — heavier but in progress
-          3. Pending requests (status=pending) — not yet started
+        Pure round-robin. New requests (last_stepped_at=0.0) get picked
+        immediately, then all requests alternate fairly — each gets one
+        step per rotation.
 
-        Within the same priority: pick the one least recently stepped
-        (round-robin fairness).
+        NOTE: an earlier version prioritized decode over prefill over
+        pending. In one-step-at-a-time scheduling that starves pending
+        requests completely — a running request's decode steps always
+        outrank a pending request, so the pending one never starts until
+        the running one finishes. Priority tiers only make sense with
+        continuous batching, not sequential stepping.
         """
         with self._lock:
             if not self.requests:
                 return None
-            return min(self.requests, key=lambda r: (r.priority, r.last_stepped_at))
+            return min(self.requests, key=lambda r: r.last_stepped_at)
 
     def active_count(self):
         """Number of in-flight requests (for monitoring)."""
