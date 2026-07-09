@@ -227,7 +227,8 @@ class InferencePeer:
     def receive_hidden(self):
         """
         Receive hidden state from upstream neighbor.
-        Extracts session_id and switches active cache before returning.
+        Extracts session_id, switches active cache, and casts to the
+        local model's compute dtype (handles cross-dtype pipelines).
         Returns (msg_type, hidden_tensor).
         """
         msg_type, payload = read_message(self.upstream_conn)
@@ -245,7 +246,9 @@ class InferencePeer:
             self.caches[cache_key] = None
         self._active_cache_key = cache_key
 
+        # Deserialize and cast to local model's dtype
         hidden = tensor_from_bytes(tensor_bytes, device=self.model.device)
+        hidden = hidden.to(dtype=self.model.dtype)
         return msg_type, hidden
 
     def send_token(self, token):
@@ -406,9 +409,12 @@ class InferencePeer:
         """
         import torch
 
+        sid = request.query.session_id
+        tc = request.token_count
+
         # Activate this request's cache
         self._active_cache_key = request.cache_key
-        self.model.pass_counter["i"] = request.token_count
+        self.model.pass_counter["i"] = tc
 
         # Determine input
         if request.first_pass:
@@ -417,22 +423,31 @@ class InferencePeer:
             model_input = request.full_sequence_ids[:, -1:]
 
         # Forward through master layers
+        print(f"[Token {tc}] ({sid}) forward (input shape {model_input.shape})...", flush=True)
         hidden, request.cache = self.model.forward(model_input, request.cache)
+        print(f"[Token {tc}] ({sid}) forward done → sending hidden downstream", flush=True)
 
         # Send hidden downstream
         msg_type = MSG_FIRST_PASS if request.first_pass else MSG_NEXT_PASS
         self.send_hidden(hidden, msg_type)
         request.first_pass = False
+        print(f"[Token {tc}] ({sid}) waiting for token from tail...", flush=True)
 
         # Receive token from tail
         msg_string, token = self.receive_token()
+        print(f"[Token {tc}] ({sid}) received '{msg_string}'", flush=True)
 
         if msg_string == "eos":
+            print(f"[Token {tc}] ({sid}) EOS — request complete", flush=True)
             self.caches[request.cache_key] = request.cache
             return False
 
         # Append token and update state
-        request.generated_ids.append(token.item())
+        token_id = token.item()
+        request.generated_ids.append(token_id)
+        decoded = self.model.decode(request.generated_ids)
+        print(f"[Token {tc}] ({sid}) id={token_id}, text so far: '{decoded}'", flush=True)
+
         request.full_sequence_ids = torch.cat(
             [request.full_sequence_ids, token.unsqueeze(0).to(request.full_sequence_ids.device)],
             dim=-1,
@@ -440,6 +455,7 @@ class InferencePeer:
         request.token_count += 1
 
         if request.token_count >= request.query.tokens_to_generate:
+            print(f"[Token {tc}] ({sid}) max tokens reached — request complete", flush=True)
             self.caches[request.cache_key] = request.cache
             return False
 

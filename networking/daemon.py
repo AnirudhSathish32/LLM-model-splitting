@@ -26,6 +26,7 @@ class Daemon:
         self._peer_last_used = {}    # {model_name: float (timestamp)}
         self.schedulers = {}         # {model_name: Scheduler} (master only)
         self._gen_threads = {}       # {model_name: Thread} (worker/tail long-running loops)
+        self._creating = set()       # model_names currently being created (guards race)
 
     def start(self):
         """Bind and listen. Blocks forever."""
@@ -136,42 +137,73 @@ class Daemon:
         if my_entry is None:
             print(f"[Daemon] WARNING: {my_ip} not in pipeline")
             return
-        
-        is_master = my_entry["role"] == "master"
 
         print(f"[Daemon] Role: {my_entry['role']}, "
               f"layers: {my_entry['layers'][0]}..{my_entry['layers'][1]}, "
               f"model: {model_name}")
 
-        # tear down existing peer + scheduler for THIS model
+        # ── Check 1: same pipeline already running? Route as warm query ──
         with self.peer_lock:
-            if model_name in self.schedulers:
-                print(f"[Daemon] Draining scheduler for {model_name} before rebuild...")
-                self.schedulers[model_name].drain()
-                self.schedulers[model_name].stop()
-                del self.schedulers[model_name]
-                print(f"[Daemon] Scheduler torn down")
-            if model_name in self.peers:
-                # Send MSG_STOP to break worker/tail loops before cleanup
-                try:
-                    self.peers[model_name].send_stop()
-                except Exception:
-                    pass
-                self.peers[model_name].cleanup()
-                del self.peers[model_name]
-                del self._peer_last_used[model_name]
-            if model_name in self._gen_threads:
-                del self._gen_threads[model_name]
+            existing_peer = self.peers.get(model_name)
 
-            self._ensure_memory_headroom()
+        if existing_peer is not None and existing_peer.shared.pipeline == shared.pipeline:
+            print(f"[Daemon] Same pipeline already active for {model_name} — routing as warm query")
+            self._run_query_on_existing_peer(conn, query, model_name)
+            return
 
-        # create peer, load model
-        peer = InferencePeer(shared, self.local)
-        peer.load_query_into_model(query)
-
+        # ── Check 2: another thread already creating this model? Wait for it ──
         with self.peer_lock:
-            self.peers[model_name] = peer
-            self._peer_last_used[model_name] = time.time()
+            if model_name in self._creating:
+                creating = True
+            else:
+                self._creating.add(model_name)
+                creating = False
+
+        if creating:
+            print(f"[Daemon] Another thread creating {model_name} — waiting...")
+            while True:
+                with self.peer_lock:
+                    peer = self.peers.get(model_name)
+                if peer is not None and peer.model is not None:
+                    break
+                time.sleep(0.5)
+            print(f"[Daemon] {model_name} ready — routing as warm query")
+            self._run_query_on_existing_peer(conn, query, model_name)
+            return
+
+        # ── Full rebuild: tear down old, create new ──
+        try:
+            with self.peer_lock:
+                if model_name in self.schedulers:
+                    print(f"[Daemon] Draining scheduler for {model_name} before rebuild...")
+                    self.schedulers[model_name].drain()
+                    self.schedulers[model_name].stop()
+                    del self.schedulers[model_name]
+                    print(f"[Daemon] Scheduler torn down")
+                if model_name in self.peers:
+                    try:
+                        self.peers[model_name].send_stop()
+                    except Exception:
+                        pass
+                    self.peers[model_name].cleanup()
+                    del self.peers[model_name]
+                    del self._peer_last_used[model_name]
+                if model_name in self._gen_threads:
+                    del self._gen_threads[model_name]
+
+                self._ensure_memory_headroom()
+
+            # create peer, load model
+            peer = InferencePeer(shared, self.local)
+            peer.load_query_into_model(query)
+
+            with self.peer_lock:
+                self.peers[model_name] = peer
+                self._peer_last_used[model_name] = time.time()
+
+        finally:
+            with self.peer_lock:
+                self._creating.discard(model_name)
 
         # Phase 2: report ready, wait for start signal
         send_message(conn, MSG_READY)
@@ -183,6 +215,7 @@ class Daemon:
             return
 
         # Phase 3: connect to chain neighbors
+        is_master = my_entry["role"] == "master"
         print(f"[Daemon] Start signal received — connecting chain")
         peer.connect()
 
@@ -206,7 +239,7 @@ class Daemon:
 
             cache_key = (query.session_id, model_name)
             request = InFlightRequest(query, session, cache_key)
-            
+
             print(f"[Scheduler] Submitting first request (session={query.session_id})")
             scheduler.submit(request)
             request.done_event.wait()
@@ -217,7 +250,6 @@ class Daemon:
             print(f"[Daemon] MSG_RESPONSE sent")
         else:
             # Worker/tail: start long-running generation loop in a thread
-            # The loop processes hidden states continuously until MSG_STOP
             gen_thread = threading.Thread(
                 target=peer.run_generation,
                 kwargs={"query": query},
@@ -229,24 +261,41 @@ class Daemon:
 
     def _handle_query(self, conn, payload):
         """
-        Handle a warm query. Master submits to Scheduler.
-        Worker/tail just acknowledge — they're already in their long-running loops.
+        Handle a warm query (MSG_QUERY). Looks up existing peer,
+        routes through _run_query_on_existing_peer.
         """
         from user_query import UserQuery
-        from session import Session
-        from scheduler import InFlightRequest
- 
+
         query = from_bytes(UserQuery, payload)
         model_name = query.model_name
- 
+
+        with self.peer_lock:
+            peer = self.peers.get(model_name)
+            if peer is not None:
+                self._peer_last_used[model_name] = time.time()
+
+        if peer is None or peer.model is None:
+            print(f"[Daemon] No peer for model '{model_name}' — rejecting MSG_QUERY")
+            send_message(conn, MSG_QUERY_FAIL)
+            return
+
+        self._run_query_on_existing_peer(conn, query, model_name)
+
+    def _run_query_on_existing_peer(self, conn, query, model_name):
+        """
+        Shared logic for running a query on an already-loaded peer.
+        Called from both _handle_query (MSG_QUERY) and _handle_config_query
+        (MSG_CONFIG with matching pipeline — routed as warm).
+        """
+        from session import Session
+        from scheduler import InFlightRequest
+
         with self.peer_lock:
             peer = self.peers.get(model_name)
             scheduler = self.schedulers.get(model_name)
-            if peer is not None:
-                self._peer_last_used[model_name] = time.time()
- 
+
         if peer is None or peer.model is None:
-            print(f"[Daemon] No peer for model '{model_name}' — rejecting MSG_QUERY")
+            print(f"[Daemon] No peer for {model_name} — rejecting")
             send_message(conn, MSG_QUERY_FAIL)
             return
 
@@ -255,7 +304,7 @@ class Daemon:
         # Synchronize: report ready, wait for start
         send_message(conn, MSG_READY)
         print(f"[Daemon] Warm query ready (model={model_name}, role={peer.role})")
- 
+
         msg_type, _ = read_message(conn)
         if msg_type != MSG_START:
             print(f"[Daemon] Expected MSG_START, got {msg_type}")
@@ -272,17 +321,30 @@ class Daemon:
                 session.messages = query.messages
             else:
                 session.add_user_message(query.prompt)
- 
+
             cache_key = (query.session_id, model_name)
             request = InFlightRequest(query, session, cache_key)
 
-            print(f"[Scheduler] Submitting warm request "
-                  f"(session={query.session_id}, active={scheduler.active_count()} in-flight)")
-            scheduler.submit(request)
+            # Retry submit in case scheduler is draining
+            while True:
+                try:
+                    print(f"[Scheduler] Submitting request "
+                          f"(session={query.session_id}, active={scheduler.active_count()} in-flight)")
+                    scheduler.submit(request)
+                    break
+                except RuntimeError:
+                    print(f"[Scheduler] Draining — retrying in 0.5s...")
+                    time.sleep(0.5)
+                    with self.peer_lock:
+                        scheduler = self.schedulers.get(model_name)
+                    if scheduler is None:
+                        print(f"[Daemon] Scheduler gone after drain — rejecting")
+                        return
+
             request.done_event.wait()
 
             response = request.result
-            print(f"[Daemon] Warm query complete — sending MSG_RESPONSE ({len(response)} chars)")
+            print(f"[Daemon] Query complete — sending MSG_RESPONSE ({len(response)} chars)")
             send_message(conn, MSG_RESPONSE, response.encode("utf-8"))
             print(f"[Daemon] MSG_RESPONSE sent")
         else:
