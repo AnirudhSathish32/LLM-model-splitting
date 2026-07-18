@@ -400,14 +400,34 @@ class Daemon:
             total, free = self._get_memory_status()
 
     def _evict_lru_peer(self):
-        """Evict the least recently used model to free memory."""
+        """Evict the least recently used model to free memory.
+        Drains the Scheduler first so in-flight requests complete
+        before the peer is torn down."""
         if not self._peer_last_used:
             return
         oldest = min(self._peer_last_used, key=self._peer_last_used.get)
         print(f"[Daemon] Evicting LRU model '{oldest}'")
+
+        # Drain and stop Scheduler if one exists (master node)
+        if oldest in self.schedulers:
+            print(f"[Daemon] Draining scheduler for '{oldest}' before eviction...")
+            self.schedulers[oldest].drain()
+            self.schedulers[oldest].stop()
+            del self.schedulers[oldest]
+            print(f"[Daemon] Scheduler drained and stopped")
+
+        # Send MSG_STOP to break worker/tail loops
+        try:
+            self.peers[oldest].send_stop()
+        except Exception:
+            pass
+
         self.peers[oldest].cleanup()
         del self.peers[oldest]
         del self._peer_last_used[oldest]
+
+        if oldest in self._gen_threads:
+            del self._gen_threads[oldest]
 
 
 # ================================================================

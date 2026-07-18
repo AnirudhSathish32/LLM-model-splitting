@@ -10,6 +10,18 @@ from config import SharedConfig, LocalConfig, MSG_CONFIG, MSG_READY, MSG_START, 
 from networking.protocol import send_message, read_message
 from networking.serialization import to_bytes, serialize_config_query
 
+import zlib
+
+def _model_port(model_name, base=65432):
+    """
+    Deterministic port per model so concurrent multi-model pipelines
+    don't collide. Uses crc32 (not Python hash(), which is salted
+    per-process). Both orchestrators compute the same port for the
+    same model independently — no coordination needed.
+    """
+    offset = zlib.crc32(model_name.encode()) % 500
+    return base + offset * 2
+
 
 @dataclass
 class UserQuery:
@@ -33,41 +45,45 @@ _cached_pipelines = {}   # {model_name: {"shared": ..., "peer_ips": [...], "mast
 # Local model cache (single-node path, per-model)
 _local_models = {}       # {model_name: {"model": nn.Module, "tokenizer": tokenizer}}
 
-# Discovery monitor state
-_DISCOVERY_INTERVAL = 30   # seconds between peer checks (internal, not user-configurable)
-_pipeline_invalidated = False
+# Peer change detection (query-time, rate-limited)
 _known_peers = set()
-_monitor_started = False
+_last_peer_check = 0.0
 
 
-def _start_discovery_monitor():
-    """Start background thread that watches for peer changes."""
-    global _monitor_started
-    if _monitor_started:
-        return
-    _monitor_started = True
+def _peers_changed_since_check():
+    """
+    Check if the Tailscale peer set changed since the last check.
+    Rate-limited: skips the (slow) Tailscale CLI call if the last
+    check was under 60 seconds ago.
+    Returns True if peers were added or removed.
+    """
+    global _last_peer_check, _known_peers
 
-    def monitor_loop():
-        global _pipeline_invalidated, _known_peers
-        from networking.tailscale import get_online_peers
+    if time.time() - _last_peer_check < 60.0:
+        return False
 
-        while True:
-            time.sleep(_DISCOVERY_INTERVAL)
-            try:
-                current = set(p["ip"] for p in get_online_peers())
-                if _known_peers and current != _known_peers:
-                    added = current - _known_peers
-                    removed = _known_peers - current
-                    print(f"[Discovery Monitor] Peer change detected — "
-                          f"added: {added or 'none'}, removed: {removed or 'none'}")
-                    _pipeline_invalidated = True
-                _known_peers = current
-            except Exception as e:
-                print(f"[Discovery Monitor] Check failed: {e}")
+    from networking.tailscale import get_online_peers
+    try:
+        current = set(p["ip"] for p in get_online_peers())
+    except Exception as e:
+        print(f"[Orchestrator] Peer check failed: {e} — proceeding with cached pipeline")
+        return False
 
-    t = threading.Thread(target=monitor_loop, daemon=True)
-    t.start()
-    print(f"[Discovery Monitor] Started (checking every {_DISCOVERY_INTERVAL}s)")
+    _last_peer_check = time.time()
+
+    if not _known_peers:
+        _known_peers = current
+        return False
+
+    if current != _known_peers:
+        added = current - _known_peers
+        removed = _known_peers - current
+        print(f"[Orchestrator] Peer change detected — "
+              f"added: {added or 'none'}, removed: {removed or 'none'}")
+        _known_peers = current
+        return True
+
+    return False
 
 
 def clear_pipeline(model_name=None):
@@ -96,16 +112,13 @@ def _free_local_model(model_name):
 # ═══════════════════════════════════════════════════════════════
 
 def send_query(query, local: LocalConfig, session_manager, daemon_port=65433):
-    global _cached_pipelines, _pipeline_invalidated, _known_peers
+    global _cached_pipelines, _known_peers, _last_peer_check
     """
     Single entry point. Looks up cached pipeline for this model.
     Warm path if found, cold path if not.
-    Discovery monitor checks for peer changes in the background.
+    Checks for peer changes at query time (rate-limited to once per 60s).
     """
     from networking.daemon import discover_and_collect
-
-    # Start discovery monitor on first call
-    _start_discovery_monitor()
 
     session = session_manager.get_or_create(query.session_id)
     session.add_user_message(query.prompt)
@@ -116,11 +129,10 @@ def send_query(query, local: LocalConfig, session_manager, daemon_port=65433):
     print(f"\n[Orchestrator] Query: '{query.prompt[:50]}...' "
           f"model={model_name} session={query.session_id}")
 
-    # ── Check if discovery monitor detected a peer change ──
-    if _pipeline_invalidated:
-        print(f"[Orchestrator] Peer change detected — invalidating all cached pipelines")
+    # ── Check for peer changes (rate-limited to one check per 60s) ──
+    if _peers_changed_since_check():
+        print(f"[Orchestrator] Invalidating cached pipelines — cold path will rebuild")
         _cached_pipelines.clear()
-        _pipeline_invalidated = False
     
     # ── Warm path: try reusing existing pipeline for this model ──
     cached = _cached_pipelines.get(model_name)
@@ -165,6 +177,10 @@ def send_query(query, local: LocalConfig, session_manager, daemon_port=65433):
     model_path = os.path.join(local.model_path, model_name)
     pipeline = build_pipeline(benchmarks, model_path, overhead=local.overhead)
 
+    # Refresh peer baseline so the next warm query doesn't re-check immediately
+    _known_peers = set(entry["ip"] for entry in pipeline) | {local.tailscale_ip}
+    _last_peer_check = time.time()
+
     # ── Single node: bypass networking entirely ──────────
     if len(pipeline) == 1:
         print(f"[Orchestrator] Single node — running locally, no networking")
@@ -181,7 +197,7 @@ def send_query(query, local: LocalConfig, session_manager, daemon_port=65433):
 
     # Step 3: Construct SharedConfig
     shared = SharedConfig(
-        port=65432,
+        port=_model_port(model_name),
         initiator_ip=local.tailscale_ip,
         debug=local.debug,
         pipeline=pipeline,
