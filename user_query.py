@@ -12,14 +12,14 @@ from networking.serialization import to_bytes, serialize_config_query
 
 import zlib
 
-def _model_port(model_name, base=65432):
+def _model_port(model_name, base=60000, span=2000):
     """
     Deterministic port per model so concurrent multi-model pipelines
     don't collide. Uses crc32 (not Python hash(), which is salted
     per-process). Both orchestrators compute the same port for the
     same model independently — no coordination needed.
     """
-    offset = zlib.crc32(model_name.encode()) % 500
+    offset = zlib.crc32(model_name.encode()) % span
     return base + offset * 2
 
 
