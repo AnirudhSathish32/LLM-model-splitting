@@ -18,11 +18,13 @@ class LocalConfig:
     device: str
     debug: bool
     tailscale_ip: str
-    overhead: float
 
     ### Paths Config ###
     model_path: str
     layers_path: str
+
+    ### Pipeline Config ###
+    overhead: float  # fraction of memory reserved (0.2 = 20% for KV cache, activations, OS)
 
     CONFIG_PATH = "./config/local_config.json"
     SESSION_PATH = "./sessions/"
@@ -37,7 +39,7 @@ class LocalConfig:
             "model_path": self.model_path,
             "debug": self.debug,
             "tailscale_ip": self.tailscale_ip,
-            "overhead": self.overhead
+            "overhead": self.overhead,
         }
         with open(path, "w") as f:
             json.dump(data, f, indent=2)
@@ -93,6 +95,9 @@ MSG_CONFIG         = 25
 MSG_READY          = 26
 MSG_QUERY          = 27
 MSG_QUERY_FAIL     = 28
+MSG_LOG_REQ        = 29
+MSG_LOG_RESP       = 30
 MSG_START          = 31
+MSG_TOKEN_STREAM   = 32   # incremental text delta, master → orchestrator
 
 TAILSCALE_PORT = 65432

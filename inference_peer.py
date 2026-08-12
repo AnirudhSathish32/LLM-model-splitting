@@ -15,6 +15,9 @@ from config import (
 
 class InferencePeer:
     def __init__(self, shared: SharedConfig, local: LocalConfig):
+        # Counts as busy from creation: a peer still being wired up has no
+        # traffic yet, and must not be evicted out from under its own query.
+        self.last_activity = time.time()
         self.shared = shared
         self.local = local
 
@@ -240,6 +243,8 @@ class InferencePeer:
         session_id = payload[2:2 + sid_len].decode("utf-8")
         tensor_bytes = payload[2 + sid_len:]
 
+        self.last_activity = time.time()
+
         # Switch active cache to this session
         cache_key = (session_id, self.loaded_model_name)
         if cache_key not in self.caches:
@@ -262,11 +267,18 @@ class InferencePeer:
         Returns ("token", token_tensor) or ("eos", None).
         """
         msg_type, payload = read_message(self.upstream_conn)
+        self.last_activity = time.time()
+
         if msg_type == MSG_EOS:
             return "eos", None
         if msg_type == MSG_TOKEN:
             token = torch.frombuffer(bytearray(payload), dtype=torch.int64)
             return "token", token
+        if msg_type == MSG_STOP:
+            # A downstream node is shutting this pipeline down — typically
+            # because it unloaded this model to make room for another one.
+            # Not a protocol error: the pipeline simply no longer exists.
+            return "stop", None
         raise ValueError(f"Expected MSG_TOKEN or MSG_EOS, got {msg_type}")
 
     def send_eos(self):
@@ -437,6 +449,13 @@ class InferencePeer:
         msg_string, token = self.receive_token()
         print(f"[Token {tc}] ({sid}) received '{msg_string}'", flush=True)
 
+        if msg_string == "stop":
+            print(f"[Token {tc}] ({sid}) downstream node shut down this pipeline",
+                  flush=True)
+            raise ConnectionError(
+                "Pipeline was shut down by a downstream node "
+                "(it likely unloaded this model to free memory)")
+
         if msg_string == "eos":
             print(f"[Token {tc}] ({sid}) EOS — request complete", flush=True)
             self.caches[request.cache_key] = request.cache
@@ -447,6 +466,12 @@ class InferencePeer:
         request.generated_ids.append(token_id)
         decoded = self.model.decode(request.generated_ids)
         print(f"[Token {tc}] ({sid}) id={token_id}, text so far: '{decoded}'", flush=True)
+
+        # Push incremental delta for streaming consumers (UI/API)
+        delta = decoded[len(request._last_decoded):]
+        request._last_decoded = decoded
+        if delta:
+            request.token_queue.put(delta)
 
         request.full_sequence_ids = torch.cat(
             [request.full_sequence_ids, token.unsqueeze(0).to(request.full_sequence_ids.device)],

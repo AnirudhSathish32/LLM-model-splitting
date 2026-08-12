@@ -9,6 +9,7 @@ from config import LocalConfig
 class Session:
     def __init__(self, session_id=None, system_prompt=None):
         self.session_id = session_id or str(uuid.uuid4())
+        self.title = None          # user-editable display name
         self.messages = []
         self.cached_token_count = 0
         self.created_at = time.time()
@@ -97,9 +98,17 @@ class SessionManager:
                 ids.append(f[:-5])
         return ids
 
+    def set_title(self, session_id, title):
+        """Rename a conversation. Empty title falls back to auto-naming."""
+        session = self.get_or_create(session_id)
+        session.title = (title or "").strip() or None
+        self.save_session(session)
+        return session.title
+
     def _save_to_disk(self, session):
         data = {
             "session_id": session.session_id,
+            "title": session.title,
             "messages": session.messages,
             "cached_token_count": session.cached_token_count,
             "created_at": session.created_at,
@@ -115,6 +124,7 @@ class SessionManager:
         with open(path) as f:
             data = json.load(f)
         session = Session(session_id=data["session_id"])
+        session.title = data.get("title")
         session.messages = data["messages"]
         session.cached_token_count = data.get("cached_token_count", 0)
         session.created_at = data.get("created_at", time.time())

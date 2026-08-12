@@ -1,0 +1,869 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Distributed Inference</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --ink:#0E141B;
+  --panel:#161F29;
+  --raise:#1D2833;
+  --edge:#263543;
+  --signal:#56CFE1;
+  --amber:#E9A15B;
+  --text:#DDE6EF;
+  --muted:#7B8C9E;
+  --danger:#E5736B;
+  --sans:"IBM Plex Sans",system-ui,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden}
+body{
+  background:var(--ink);color:var(--text);font-family:var(--sans);
+  font-size:15px;line-height:1.55;-webkit-font-smoothing:antialiased;
+}
+button,input,textarea,select{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--signal);outline-offset:2px}
+
+.thread,.sessions,.stages,.dialog{scrollbar-width:thin;scrollbar-color:var(--edge) transparent}
+.thread::-webkit-scrollbar,.sessions::-webkit-scrollbar,
+.stages::-webkit-scrollbar,.dialog::-webkit-scrollbar{width:9px;height:9px}
+.thread::-webkit-scrollbar-track,.sessions::-webkit-scrollbar-track,
+.stages::-webkit-scrollbar-track,.dialog::-webkit-scrollbar-track{background:transparent}
+.thread::-webkit-scrollbar-thumb,.sessions::-webkit-scrollbar-thumb,
+.stages::-webkit-scrollbar-thumb,.dialog::-webkit-scrollbar-thumb{
+  background:var(--edge);border-radius:5px;
+}
+.thread::-webkit-scrollbar-thumb:hover,.sessions::-webkit-scrollbar-thumb:hover{
+  background:#33465a;
+}
+
+.app{
+  display:grid;grid-template-columns:280px 1fr 0;
+  height:100vh;height:100dvh;overflow:hidden;
+  transition:grid-template-columns .18s ease;
+}
+.app.logs-open{grid-template-columns:280px 1fr 400px}
+
+/* ── Center column ─────────────────────────────── */
+.main{display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden}
+
+/* Signature: live pipeline strip */
+.pipeline{
+  border-bottom:1px solid var(--edge);background:var(--panel);
+  padding:14px 24px;display:flex;align-items:center;gap:18px;
+  overflow-x:auto;flex-shrink:0;
+}
+.pipeline-label{
+  font-family:var(--mono);font-size:10px;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--muted);white-space:nowrap;
+}
+.stages{display:flex;align-items:stretch;gap:0;flex:1;min-width:0;overflow-x:auto}
+.stage{
+  border:1px solid var(--edge);border-radius:3px;background:var(--raise);
+  padding:7px 12px;min-width:132px;position:relative;flex-shrink:0;
+}
+.stage .role{
+  font-family:var(--mono);font-size:10px;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--muted);
+}
+.stage.master .role{color:var(--amber)}
+.stage .ip{font-family:var(--mono);font-size:12.5px;color:var(--text);margin-top:1px}
+.stage .layers{font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:2px}
+.link{
+  align-self:center;width:34px;height:2px;background:var(--edge);
+  position:relative;overflow:hidden;flex-shrink:0;
+}
+.streaming .link::after{
+  content:"";position:absolute;inset:0;width:40%;
+  background:linear-gradient(90deg,transparent,var(--signal),transparent);
+  animation:flow 1.1s linear infinite;
+}
+.streaming .stage{border-color:#31485a}
+@keyframes flow{from{transform:translateX(-100%)}to{transform:translateX(250%)}}
+.pipeline-empty{font-family:var(--mono);font-size:12px;color:var(--muted)}
+
+/* Messages */
+.thread{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:28px 24px 8px}
+.thread-inner{max-width:720px;margin:0 auto;display:flex;flex-direction:column;gap:22px}
+.msg{display:grid;grid-template-columns:60px 1fr;gap:16px;align-items:start}
+.who{
+  font-family:var(--mono);font-size:10px;letter-spacing:.12em;
+  text-transform:uppercase;color:var(--muted);padding-top:4px;
+}
+.msg.assistant .who{color:var(--signal)}
+.bubble{white-space:pre-wrap;overflow-wrap:anywhere;min-width:0}
+.bubble.pending::after{
+  content:"";display:inline-block;width:7px;height:15px;
+  background:var(--signal);vertical-align:-2px;margin-left:2px;
+  animation:blink 1s step-end infinite;
+}
+@keyframes blink{50%{opacity:0}}
+.err{color:var(--danger);font-family:var(--mono);font-size:13px}
+
+.empty{
+  text-align:center;color:var(--muted);padding:64px 0;
+}
+.empty h1{font-size:19px;font-weight:600;color:var(--text);margin-bottom:6px}
+.empty p{font-size:13.5px}
+
+/* Composer */
+.composer{padding:14px 24px 20px;flex-shrink:0}
+.composer-inner{
+  max-width:720px;margin:0 auto;display:flex;gap:10px;align-items:flex-end;
+  border:1px solid var(--edge);border-radius:4px;background:var(--panel);
+  padding:10px 10px 10px 14px;
+}
+.composer-inner:focus-within{border-color:#38536a}
+textarea{
+  flex:1;background:none;border:0;resize:none;max-height:180px;
+  min-height:24px;line-height:1.5;
+}
+textarea::placeholder{color:var(--muted)}
+.send{
+  background:var(--signal);color:#08131A;border:0;border-radius:3px;
+  padding:7px 16px;font-weight:600;font-size:13.5px;cursor:pointer;
+}
+.send:hover:not(:disabled){filter:brightness(1.1)}
+.send:disabled{background:var(--edge);color:var(--muted);cursor:not-allowed}
+.meta{
+  max-width:720px;margin:8px auto 0;display:flex;gap:14px;align-items:center;
+  font-family:var(--mono);font-size:11px;color:var(--muted);
+}
+.meta select,.meta input[type=number]{
+  background:var(--panel);border:1px solid var(--edge);border-radius:3px;
+  padding:3px 6px;font-family:var(--mono);font-size:11px;color:var(--text);
+}
+.meta input[type=number]{width:66px}
+.meta select:focus,.meta input:focus{border-color:#38536a;outline:none}
+.meta .sep{color:var(--edge)}
+.meta #status{margin-left:auto;color:var(--signal)}
+
+/* ── Activity panel (right) ────────────────────── */
+.logs{
+  border-left:1px solid var(--edge);background:var(--panel);
+  display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden;
+}
+.app:not(.logs-open) .logs{display:none}
+.logs-head{
+  flex-shrink:0;padding:14px 16px;border-bottom:1px solid var(--edge);
+  display:flex;align-items:center;justify-content:space-between;gap:8px;
+}
+.logs-head h2{
+  font-family:var(--mono);font-size:10px;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--muted);font-weight:500;
+}
+.logs-actions{display:flex;gap:4px;align-items:center}
+.logs-body{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain}
+
+.node{border-bottom:1px solid var(--edge)}
+.node-head{
+  padding:9px 14px;display:flex;align-items:center;gap:9px;cursor:pointer;
+  user-select:none;
+}
+.node-head:hover{background:var(--raise)}
+.caret{
+  color:var(--muted);font-size:9px;width:9px;flex-shrink:0;
+  transition:transform .15s;
+}
+.node.open .caret{transform:rotate(90deg)}
+.node-id{flex:1;min-width:0}
+.node-role{
+  font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--muted);
+}
+.node.is-master .node-role{color:var(--amber)}
+.node-ip{font-family:var(--mono);font-size:12px;color:var(--text)}
+.node-meta{
+  font-family:var(--mono);font-size:10px;color:var(--muted);
+  text-align:right;flex-shrink:0;
+}
+.dot{
+  width:6px;height:6px;border-radius:50%;background:var(--muted);
+  flex-shrink:0;
+}
+.dot.live{background:var(--signal)}
+.dot.down{background:var(--danger)}
+
+.node-lines{display:none;padding:2px 0 8px;background:var(--ink)}
+.node.open .node-lines{display:block}
+.line{
+  font-family:var(--mono);font-size:11px;line-height:1.5;
+  padding:1px 14px 1px 30px;text-indent:-16px;
+  white-space:pre-wrap;overflow-wrap:anywhere;color:var(--muted);
+}
+.line.generation{color:#9FB6C9}
+.line.scheduler{color:var(--signal)}
+.line.orchestrator{color:var(--amber)}
+.line.daemon{color:#8FA3B5}
+.line.error{color:var(--danger)}
+.node-note{
+  padding:8px 14px 10px 30px;font-size:12px;color:var(--muted);
+}
+
+/* ── Right rail ────────────────────────────────── */
+.rail{
+  border-right:1px solid var(--edge);background:var(--panel);
+  display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden;
+}
+.rail-head{
+  flex-shrink:0;padding:16px;border-bottom:1px solid var(--edge);
+  display:flex;align-items:center;justify-content:space-between;gap:8px;
+}
+.rail-head h2{
+  font-family:var(--mono);font-size:10px;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--muted);font-weight:500;
+}
+.newbtn{
+  background:none;border:1px solid var(--edge);border-radius:3px;
+  color:var(--text);padding:3px 9px;font-size:12px;cursor:pointer;
+}
+.newbtn:hover{border-color:var(--signal);color:var(--signal)}
+.sessions{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:8px}
+.sess{
+  padding:9px 11px;border-radius:3px;cursor:pointer;margin-bottom:2px;
+  border-left:2px solid transparent;
+}
+.sess:hover{background:var(--raise)}
+.sess.active{background:var(--raise);border-left-color:var(--signal)}
+.sess .title{
+  font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.sess .sub{
+  font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:2px;
+  display:flex;justify-content:space-between;gap:8px;
+}
+.sess .acts{display:flex;gap:2px;opacity:0;transition:opacity .12s}
+.sess:hover .acts,.sess.active .acts{opacity:1}
+.act{
+  background:none;border:0;color:var(--muted);cursor:pointer;
+  font-size:12px;line-height:1;padding:0 3px;
+}
+.act:hover{color:var(--signal)}
+.act.del:hover{color:var(--danger)}
+.rename{
+  width:100%;background:var(--ink);border:1px solid var(--signal);
+  border-radius:2px;padding:2px 6px;font-size:13.5px;
+}
+.rail-empty{color:var(--muted);font-size:13px;padding:16px;text-align:center}
+.rail-foot{flex-shrink:0;border-top:1px solid var(--edge);padding:10px}
+.settingsbtn{
+  width:100%;background:none;border:0;color:var(--muted);cursor:pointer;
+  text-align:left;padding:6px 8px;border-radius:3px;font-size:13px;
+}
+.settingsbtn:hover{background:var(--raise);color:var(--text)}
+
+/* Settings dialog */
+.scrim{
+  position:fixed;inset:0;background:rgba(6,10,14,.72);
+  display:none;align-items:center;justify-content:center;padding:20px;z-index:50;
+}
+.scrim.open{display:flex}
+.dialog{
+  background:var(--panel);border:1px solid var(--edge);border-radius:5px;
+  width:100%;max-width:520px;max-height:88vh;overflow-y:auto;
+}
+.dialog-head{
+  padding:18px 22px 14px;border-bottom:1px solid var(--edge);
+  display:flex;justify-content:space-between;align-items:baseline;gap:12px;
+}
+.dialog-head h2{font-size:16px;font-weight:600}
+.dialog-head p{font-size:12.5px;color:var(--muted);margin-top:3px}
+.dialog-body{padding:18px 22px;display:flex;flex-direction:column;gap:16px}
+.field label{
+  display:block;font-family:var(--mono);font-size:10px;letter-spacing:.12em;
+  text-transform:uppercase;color:var(--muted);margin-bottom:5px;
+}
+.field input[type=text],.field input[type=number],.field select{
+  width:100%;background:var(--ink);border:1px solid var(--edge);
+  border-radius:3px;padding:7px 10px;font-family:var(--mono);font-size:13px;
+}
+.field input:focus,.field select:focus{border-color:#38536a;outline:none}
+.field .hint{font-size:12px;color:var(--muted);margin-top:5px;line-height:1.45}
+.field.check{display:flex;align-items:center;gap:9px}
+.field.check label{margin:0;text-transform:none;letter-spacing:0;
+  font-family:var(--sans);font-size:13.5px;color:var(--text)}
+.restart-tag{
+  font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;color:var(--amber);
+  border:1px solid #4a3a25;border-radius:2px;padding:1px 5px;margin-left:7px;
+}
+.dialog-foot{
+  padding:14px 22px 18px;border-top:1px solid var(--edge);
+  display:flex;justify-content:space-between;align-items:center;gap:12px;
+}
+.notice{font-size:12.5px;color:var(--muted);flex:1}
+.notice.warn{color:var(--amber)}
+.notice.bad{color:var(--danger)}
+.btn-row{display:flex;gap:8px;flex-shrink:0}
+.btn{
+  border:1px solid var(--edge);background:none;color:var(--text);
+  border-radius:3px;padding:7px 15px;font-size:13.5px;cursor:pointer;
+}
+.btn:hover{border-color:#38536a}
+.btn.primary{background:var(--signal);border-color:var(--signal);color:#08131A;font-weight:600}
+.btn.primary:hover:not(:disabled){filter:brightness(1.1)}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+
+@media (max-width:860px){
+  .app{grid-template-columns:1fr}
+  .rail{display:none}
+}
+@media (prefers-reduced-motion:reduce){
+  *,*::after{animation:none!important;transition:none!important}
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="rail">
+    <div class="rail-head">
+      <h2>Conversations</h2>
+      <button class="newbtn" id="new">New</button>
+    </div>
+    <div class="sessions" id="sessions"></div>
+    <div class="rail-foot">
+      <button class="settingsbtn" id="openSettings">Settings</button>
+    </div>
+  </aside>
+
+  <div class="main">
+
+    <!-- Signature element: live pipeline topology -->
+    <div class="pipeline" id="pipeline">
+      <span class="pipeline-label">Pipeline</span>
+      <div class="stages" id="stages">
+        <span class="pipeline-empty">Not built yet — send a message to start</span>
+      </div>
+    </div>
+
+    <div class="thread" id="thread">
+      <div class="thread-inner" id="threadInner"></div>
+    </div>
+
+    <div class="composer">
+      <div class="composer-inner">
+        <textarea id="input" rows="1" placeholder="Send a message…"></textarea>
+        <button class="send" id="send">Send</button>
+      </div>
+      <div class="meta">
+        <label for="model">Model</label>
+        <select id="model"></select>
+        <span class="sep">|</span>
+        <label for="tokens">Max reply</label>
+        <input type="number" id="tokens" min="1" max="4096" step="50"
+               value="200" title="Longest reply the model will generate, in tokens">
+        <span>tokens</span>
+        <span id="status"></span>
+        <button class="act" id="toggleLogs" style="margin-left:8px">Activity</button>
+      </div>
+    </div>
+  </div>
+
+  <aside class="logs" id="logsPanel">
+    <div class="logs-head">
+      <h2>Activity</h2>
+      <div class="logs-actions">
+        <button class="act" id="logsClear" title="Clear this machine's log">Clear</button>
+        <button class="act" id="logsClose" title="Hide panel">×</button>
+      </div>
+    </div>
+    <div class="logs-body" id="logsBody"></div>
+  </aside>
+
+</div>
+
+<div class="scrim" id="scrim">
+  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="setTitle">
+    <div class="dialog-head">
+      <div>
+        <h2 id="setTitle">Settings</h2>
+        <p>Applies to this machine only. Each machine keeps its own.</p>
+      </div>
+    </div>
+
+    <div class="dialog-body">
+      <div class="field">
+        <label for="setDevice">Compute device<span class="restart-tag">restart</span></label>
+        <select id="setDevice">
+          <option value="cuda">cuda — NVIDIA GPU</option>
+          <option value="cpu">cpu</option>
+          <option value="mps">mps — Apple Silicon</option>
+        </select>
+        <div class="hint">Where this machine runs its share of the model.</div>
+      </div>
+
+      <div class="field">
+        <label for="setIp">Tailscale address<span class="restart-tag">restart</span></label>
+        <input type="text" id="setIp" placeholder="100.x.x.x">
+        <div class="hint">How other machines reach this one. Find it with
+          <code>tailscale ip -4</code>.</div>
+      </div>
+
+      <div class="field">
+        <label for="setLayers">Layer files</label>
+        <input type="text" id="setLayers" placeholder="./layers">
+        <div class="hint">Where per-layer model weights live.</div>
+      </div>
+
+      <div class="field">
+        <label for="setModels">Model files</label>
+        <input type="text" id="setModels" placeholder="./models">
+        <div class="hint">Config and tokenizer files for each model.</div>
+      </div>
+
+      <div class="field">
+        <label for="setOverhead">Memory held in reserve</label>
+        <input type="number" id="setOverhead" min="0" max="0.9" step="0.05">
+        <div class="hint">Kept free for conversation cache and the OS.
+          0.2 reserves 20%. Raise it if this machine runs out of memory;
+          lower it to fit more layers.</div>
+      </div>
+
+      <div class="field check">
+        <input type="checkbox" id="setDebug">
+        <label for="setDebug">Verbose logging</label>
+      </div>
+    </div>
+
+    <div class="dialog-foot">
+      <div class="notice" id="setNotice"></div>
+      <div class="btn-row">
+        <button class="btn" id="setCancel">Cancel</button>
+        <button class="btn primary" id="setSave">Save</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let currentSession = null, busy = false;
+
+const esc = s => s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+
+// ── Sessions ───────────────────────────────────
+async function loadSessions(){
+  const {sessions} = await (await fetch('/api/sessions')).json();
+  const box = $('sessions');
+  if(!sessions.length){
+    box.innerHTML = '<div class="rail-empty">No conversations yet</div>';
+    return;
+  }
+  box.innerHTML = '';
+  for(const s of sessions){
+    const el = document.createElement('div');
+    el.className = 'sess' + (s.id === currentSession ? ' active' : '');
+    el.innerHTML = `<div class="title"></div>
+      <div class="sub"><span>${s.turns} turn${s.turns===1?'':'s'}</span>
+      <span class="acts">
+        <button class="act ren" title="Rename">Rename</button>
+        <button class="act del" title="Delete">×</button>
+      </span></div>`;
+    el.querySelector('.title').textContent = s.title;
+
+    el.querySelector('.ren').onclick = e => { e.stopPropagation(); startRename(el, s); };
+    el.querySelector('.del').onclick = e => {
+      e.stopPropagation();
+      fetch('/api/sessions/'+encodeURIComponent(s.id), {method:'DELETE'})
+        .then(() => { if(currentSession===s.id){currentSession=null; render([]);} loadSessions(); });
+    };
+    el.onclick = () => openSession(s.id);
+    box.appendChild(el);
+  }
+}
+
+function startRename(row, sess){
+  const titleEl = row.querySelector('.title');
+  const input = document.createElement('input');
+  input.className = 'rename';
+  input.value = sess.title;
+  titleEl.replaceWith(input);
+  input.focus();
+  input.select();
+
+  let settled = false;
+  const commit = async save => {
+    if(settled) return;
+    settled = true;
+    if(save && input.value.trim() !== sess.title){
+      await fetch('/api/sessions/'+encodeURIComponent(sess.id), {
+        method:'PATCH', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({title: input.value})
+      });
+    }
+    loadSessions();
+  };
+
+  input.onblur = () => commit(true);
+  input.onkeydown = e => {
+    if(e.key === 'Enter'){ e.preventDefault(); commit(true); }
+    if(e.key === 'Escape'){ e.preventDefault(); commit(false); }
+  };
+  input.onclick = e => e.stopPropagation();
+}
+
+async function openSession(id){
+  currentSession = id;
+  const data = await (await fetch('/api/sessions/'+encodeURIComponent(id))).json();
+  render(data.messages);
+  loadSessions();
+  refreshPipeline();
+}
+
+async function newSession(){
+  const id = 'chat-' + Date.now().toString(36);
+  await fetch('/api/sessions', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({id})
+  });
+  currentSession = id;
+  render([]);
+  loadSessions();
+}
+
+// ── Thread ─────────────────────────────────────
+function render(messages){
+  const box = $('threadInner');
+  box.innerHTML = '';
+  if(!messages.length){
+    box.innerHTML = `<div class="empty"><h1>Ready when you are</h1>
+      <p>Your prompt runs across every machine on the tailnet.</p></div>`;
+    return;
+  }
+  for(const m of messages) addMsg(m.role, m.content);
+}
+
+function addMsg(role, text){
+  const box = $('threadInner');
+  box.querySelector('.empty')?.remove();
+  const el = document.createElement('div');
+  el.className = 'msg ' + role;
+  el.innerHTML = `<div class="who">${role === 'user' ? 'You' : 'Model'}</div>
+                  <div class="bubble"></div>`;
+  el.querySelector('.bubble').textContent = text;
+  box.appendChild(el);
+  $('thread').scrollTop = $('thread').scrollHeight;
+  return el.querySelector('.bubble');
+}
+
+// ── Pipeline strip ─────────────────────────────
+async function refreshPipeline(){
+  const model = $('model').value;
+  if(!model) return;
+  const {pipeline, self_ip} = await (await fetch('/api/pipeline?model='+encodeURIComponent(model))).json();
+  const box = $('stages');
+
+  if(!pipeline){
+    box.innerHTML = '<span class="pipeline-empty">Not built yet — send a message to start</span>';
+    return;
+  }
+  if(pipeline.mode === 'local'){
+    box.innerHTML = `<div class="stage master"><div class="role">Single node</div>
+      <div class="ip">${esc(self_ip||'this machine')}</div>
+      <div class="layers">all layers</div></div>`;
+    return;
+  }
+  box.innerHTML = pipeline.stages.map((s,i) =>
+    (i ? '<div class="link"></div>' : '') +
+    `<div class="stage ${s.role}">
+       <div class="role">${esc(s.role)}${s.ip===self_ip?' · this machine':''}</div>
+       <div class="ip">${esc(s.ip)}</div>
+       <div class="layers">layers ${s.layer_start}–${s.layer_end} · ${s.count}</div>
+     </div>`
+  ).join('');
+}
+
+// ── Reply length ───────────────────────────────
+function replyTokens(){
+  const n = parseInt($('tokens').value, 10);
+  if(Number.isNaN(n)) return 200;
+  return Math.min(4096, Math.max(1, n));
+}
+
+// Normalize the field on blur so it always shows what will be sent
+$('tokens').addEventListener('blur', () => { $('tokens').value = replyTokens(); });
+
+// ── Send ───────────────────────────────────────
+async function send(){
+  const text = $('input').value.trim();
+  if(!text || busy) return;
+  if(!currentSession) await newSession();
+
+  busy = true;
+  $('send').disabled = true;
+  $('input').value = '';
+  $('input').style.height = 'auto';
+  addMsg('user', text);
+
+  const bubble = addMsg('assistant', '');
+  bubble.classList.add('pending');
+  $('pipeline').classList.add('streaming');
+  $('status').textContent = 'generating…';
+
+  try{
+    const res = await fetch('/api/chat', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        session_id: currentSession,
+        model: $('model').value,
+        prompt: text,
+        tokens: replyTokens()
+      })
+    });
+
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+
+    while(true){
+      const {done, value} = await reader.read();
+      if(done) break;
+      buf += dec.decode(value, {stream:true});
+      const lines = buf.split('\n');
+      buf = lines.pop();
+      for(const line of lines){
+        if(!line.trim()) continue;
+        const msg = JSON.parse(line);
+        if(msg.type === 'token'){
+          bubble.textContent += msg.text;
+          $('thread').scrollTop = $('thread').scrollHeight;
+        }else if(msg.type === 'done'){
+          if(msg.text) bubble.textContent = msg.text;
+        }else if(msg.type === 'error'){
+          bubble.classList.add('err');
+          bubble.textContent = msg.message;
+        }
+      }
+    }
+  }catch(e){
+    bubble.classList.add('err');
+    bubble.textContent = 'Connection to the server was lost. Check the daemon is running.';
+  }finally{
+    bubble.classList.remove('pending');
+    $('pipeline').classList.remove('streaming');
+    $('status').textContent = '';
+    $('send').disabled = false;
+    busy = false;
+    refreshPipeline();
+    loadSessions();
+  }
+}
+
+// ── Wiring ─────────────────────────────────────
+$('send').onclick = send;
+$('new').onclick = newSession;
+$('input').addEventListener('keydown', e => {
+  if(e.key === 'Enter' && !e.shiftKey){ e.preventDefault(); send(); }
+});
+$('input').addEventListener('input', e => {
+  e.target.style.height = 'auto';
+  e.target.style.height = Math.min(e.target.scrollHeight, 180) + 'px';
+});
+$('model').onchange = refreshPipeline;
+
+
+// ── Settings ───────────────────────────────────
+async function openSettings(){
+  const {settings} = await (await fetch('/api/settings')).json();
+  $('setDevice').value   = settings.device;
+  $('setIp').value       = settings.tailscale_ip;
+  $('setLayers').value   = settings.layers_path;
+  $('setModels').value   = settings.model_path;
+  $('setOverhead').value = settings.overhead;
+  $('setDebug').checked  = settings.debug;
+  setNotice('');
+  $('scrim').classList.add('open');
+  $('setDevice').focus();
+}
+
+function closeSettings(){ $('scrim').classList.remove('open'); }
+
+function setNotice(text, kind){
+  const el = $('setNotice');
+  el.textContent = text;
+  el.className = 'notice' + (kind ? ' ' + kind : '');
+}
+
+async function saveSettings(){
+  const body = {
+    device:       $('setDevice').value,
+    tailscale_ip: $('setIp').value.trim(),
+    layers_path:  $('setLayers').value.trim() || './layers',
+    model_path:   $('setModels').value.trim() || './models',
+    overhead:     parseFloat($('setOverhead').value),
+    debug:        $('setDebug').checked,
+  };
+
+  if(Number.isNaN(body.overhead) || body.overhead < 0 || body.overhead >= 1){
+    setNotice('Memory reserve must be between 0 and 1.', 'bad');
+    return;
+  }
+
+  $('setSave').disabled = true;
+  setNotice('Saving…');
+  try{
+    const res = await fetch('/api/settings', {
+      method:'PUT', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(body)
+    });
+    const data = await res.json();
+
+    if(!res.ok){
+      setNotice(data.error || 'Could not save.', 'bad');
+      return;
+    }
+    if(data.needs_restart.length){
+      setNotice('Saved. Restart this machine\'s app to apply: '
+                + data.needs_restart.join(', ') + '.', 'warn');
+      return;
+    }
+    setNotice('Saved.');
+    setTimeout(closeSettings, 700);
+  }catch(e){
+    setNotice('Could not reach the server.', 'bad');
+  }finally{
+    $('setSave').disabled = false;
+  }
+}
+
+$('openSettings').onclick = openSettings;
+$('setCancel').onclick = closeSettings;
+$('setSave').onclick = saveSettings;
+$('scrim').onclick = e => { if(e.target === $('scrim')) closeSettings(); };
+document.addEventListener('keydown', e => {
+  if(e.key === 'Escape' && $('scrim').classList.contains('open')) closeSettings();
+});
+
+
+// ── Activity panel ─────────────────────────────
+let logsOpen = false, logPoll = null;
+const nodeState = {};   // ip -> {since, expanded, lines, role, layers, error}
+
+function toggleLogs(){
+  logsOpen = !logsOpen;
+  document.querySelector('.app').classList.toggle('logs-open', logsOpen);
+  if(logsOpen){ pollLogs(); logPoll = setInterval(pollLogs, 1000); }
+  else { clearInterval(logPoll); logPoll = null; }
+}
+
+async function knownNodes(){
+  const model = $('model').value;
+  const {pipeline, self_ip} = await (await fetch(
+    '/api/pipeline?model=' + encodeURIComponent(model))).json();
+
+  if(pipeline && pipeline.mode === 'distributed' && pipeline.stages.length){
+    return pipeline.stages.map(st => ({
+      ip: st.ip, role: st.role, self: st.ip === self_ip,
+      layers: `layers ${st.layer_start}-${st.layer_end}`
+    }));
+  }
+  // No pipeline yet, or single-node: show this machine alone.
+  return [{ip: self_ip || '', role: 'this machine', self: true, layers: ''}];
+}
+
+async function pollLogs(){
+  if(!logsOpen) return;
+  const nodes = await knownNodes();
+
+  await Promise.all(nodes.map(async n => {
+    const st = nodeState[n.ip] ||= {since: 0, expanded: n.self, lines: []};
+    st.role = n.role; st.layers = n.layers; st.self = n.self;
+    try{
+      const r = await fetch(`/api/logs?ip=${encodeURIComponent(n.ip)}&since=${st.since}`);
+      const d = await r.json();
+      st.error = d.error || null;
+      if(d.lines && d.lines.length){
+        st.lines.push(...d.lines);
+        if(st.lines.length > 400) st.lines = st.lines.slice(-400);
+        st.since = d.latest_seq;
+      }
+      st.device = d.device;
+    }catch(e){ st.error = 'unreachable'; }
+  }));
+
+  renderLogs(nodes);
+}
+
+function renderLogs(nodes){
+  const body = $('logsBody');
+
+  // Preserve scroll position unless the user is pinned to the bottom
+  const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 40;
+
+  body.innerHTML = '';
+  for(const n of nodes){
+    const st = nodeState[n.ip] || {lines: [], expanded: false};
+    const el = document.createElement('div');
+    el.className = 'node' + (st.expanded ? ' open' : '')
+                 + (n.role === 'master' ? ' is-master' : '');
+
+    const dot = st.error ? 'down' : (st.lines.length ? 'live' : '');
+    el.innerHTML = `
+      <div class="node-head">
+        <span class="caret">▶</span>
+        <span class="dot ${dot}"></span>
+        <span class="node-id">
+          <span class="node-role">${esc(n.role)}${n.self ? ' · this machine' : ''}</span>
+          <div class="node-ip">${esc(n.ip || 'unknown')}</div>
+        </span>
+        <span class="node-meta">${esc(n.layers || '')}<br>${st.lines.length} lines</span>
+      </div>
+      <div class="node-lines"></div>`;
+
+    const lines = el.querySelector('.node-lines');
+    if(st.error){
+      lines.innerHTML = `<div class="node-note">Could not reach this node: ${esc(st.error)}
+        <br>It may not be running the app yet.</div>`;
+    }else if(!st.lines.length){
+      lines.innerHTML = `<div class="node-note">No output yet.</div>`;
+    }else{
+      for(const ln of st.lines){
+        const d = document.createElement('div');
+        d.className = 'line ' + ln.source;
+        d.textContent = ln.text;
+        lines.appendChild(d);
+      }
+    }
+
+    el.querySelector('.node-head').onclick = () => {
+      st.expanded = !st.expanded;
+      el.classList.toggle('open', st.expanded);
+    };
+    body.appendChild(el);
+  }
+
+  if(atBottom){
+    for(const open of body.querySelectorAll('.node.open .node-lines')){
+      open.scrollTop = open.scrollHeight;
+    }
+    body.scrollTop = body.scrollHeight;
+  }
+}
+
+$('toggleLogs').onclick = toggleLogs;
+$('logsClose').onclick = toggleLogs;
+$('logsClear').onclick = async () => {
+  await fetch('/api/logs/clear', {method:'POST'});
+  for(const ip in nodeState){ nodeState[ip].lines = []; }
+  pollLogs();
+};
+
+(async function init(){
+  const {models} = await (await fetch('/api/models')).json();
+  $('model').innerHTML = models.length
+    ? models.map(m => `<option>${esc(m)}</option>`).join('')
+    : '<option>no models found</option>';
+  await loadSessions();
+  const {sessions} = await (await fetch('/api/sessions')).json();
+  if(sessions.length) await openSession(sessions[0].id);
+  else render([]);
+  refreshPipeline();
+})();
+</script>
+</body>
+</html>

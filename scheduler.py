@@ -14,6 +14,7 @@ of one user blocking everyone until their full response is done.
 
 import threading
 import time
+import queue
 from collections import deque
 
 
@@ -44,7 +45,10 @@ class InFlightRequest:
         # lifecycle
         self.status = "pending"         # pending → running → done
         self.result = None              # response string, set when done
+        self.error = None               # set if generation failed
         self.done_event = threading.Event()
+        self.token_queue = queue.Queue() # incremental text deltas for streaming
+        self._last_decoded = ""          # for computing deltas
         self.created_at = time.time()
         self.last_stepped_at = 0.0      # 0.0 = never stepped → picked first (round-robin)
 
@@ -99,6 +103,15 @@ class Scheduler:
         self.running = True
         print(f"[Scheduler] Started")
 
+        try:
+            self._loop()
+        finally:
+            # Always clear the flag: _peer_is_healthy relies on it to tell
+            # a live scheduler from one that died.
+            self.running = False
+            print(f"[Scheduler] Stopped")
+
+    def _loop(self):
         while self.running:
             # wait for work
             self._has_work.wait(timeout=1.0)
@@ -113,16 +126,49 @@ class Scheduler:
                 # first step for this request — tokenize and prepare
                 if request.status == "pending":
                     request.status = "running"
-                    self.peer.prepare_request(request)
+                    try:
+                        self.peer.prepare_request(request)
+                    except Exception as e:
+                        print(f"[Scheduler] Could not prepare "
+                              f"{request.query.session_id}: {e}")
+                        request.status = "done"
+                        request.error = str(e)
+                        request.result = ""
+                        request.token_queue.put(None)
+                        request.done_event.set()
+                        with self._lock:
+                            if request in self.requests:
+                                self.requests.remove(request)
+                        continue
 
                 # one forward step
-                still_going = self.peer.step_master(request)
+                try:
+                    still_going = self.peer.step_master(request)
+                except Exception as e:
+                    # The pipeline is gone. Fail this request and release
+                    # whoever is waiting on it — never let the exception
+                    # escape and kill this thread, or drain() would spin
+                    # forever waiting for a request that can never finish.
+                    print(f"[Scheduler] Request {request.query.session_id} "
+                          f"failed: {type(e).__name__}: {e}")
+                    request.status = "done"
+                    request.error = str(e)
+                    request.result = self.peer.model.decode(request.generated_ids) \
+                        if request.generated_ids else ""
+                    request.token_queue.put(None)
+                    request.done_event.set()
+                    with self._lock:
+                        if request in self.requests:
+                            self.requests.remove(request)
+                    continue
+
                 request.last_stepped_at = time.time()
 
                 if not still_going:
                     # generation finished for this request
                     request.status = "done"
                     request.result = self.peer.model.decode(request.generated_ids)
+                    request.token_queue.put(None)   # sentinel: no more deltas
                     request.done_event.set()
 
                     with self._lock:
@@ -156,7 +202,7 @@ class Scheduler:
         with self._lock:
             return len(self.requests)
 
-    def drain(self):
+    def drain(self, timeout=120.0):
         """
         Block until all in-flight requests complete.
         Rejects new submissions while draining.
@@ -166,9 +212,19 @@ class Scheduler:
         count = self.active_count()
         if count > 0:
             print(f"[Scheduler] Draining {count} in-flight requests...")
-        while self.active_count() > 0:
+
+        waited = 0.0
+        while self.active_count() > 0 and waited < timeout:
+            if not self.running:
+                print(f"[Scheduler] Scheduler is not running — abandoning drain")
+                break
             time.sleep(0.1)
-        if count > 0:
+            waited += 0.1
+
+        if self.active_count() > 0:
+            print(f"[Scheduler] Drain timed out with "
+                  f"{self.active_count()} request(s) stuck — continuing anyway")
+        elif count > 0:
             print(f"[Scheduler] Drain complete")
         self._draining = False
 

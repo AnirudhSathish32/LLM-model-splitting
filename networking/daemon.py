@@ -3,6 +3,8 @@ import os, sys, json, socket, threading, time, torch, io
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config import (
+    MSG_LOG_REQ, MSG_LOG_RESP,
+    MSG_TOKEN_STREAM,
     SharedConfig, LocalConfig,
     MSG_PING, MSG_PONG,
     MSG_BENCHMARK_REQ, MSG_BENCHMARK_RESP, MSG_BENCHMARK_MISS,
@@ -59,9 +61,115 @@ class Daemon:
                     continue
         except KeyboardInterrupt:
             print("\n[Daemon] KeyboardInterrupt detected. Shutting down...")
-            self.running = False
         finally:
+            self.shutdown()
             server.close()
+
+    def _run_generation_guarded(self, peer, query, model_name, role):
+        """
+        Run a worker/tail generation loop and release the peer when it ends.
+
+        Without this wrapper, an upstream node exiting raises ConnectionError
+        deep inside receive_hidden, the thread dies with a traceback, and the
+        peer is left loaded with dead sockets. Later queries would then match
+        the cached pipeline and route to a loop that no longer exists.
+        """
+        try:
+            peer.run_generation(query=query)
+            print(f"[Daemon] {role} loop for '{model_name}' ended normally")
+        except ConnectionError as e:
+            print(f"[Daemon] Lost connection to the pipeline ({e})")
+        except Exception as e:
+            print(f"[Daemon] {role} loop for '{model_name}' failed: "
+                  f"{type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            self._release_peer(model_name)
+
+    def _release_peer(self, model_name):
+        """
+        Drop a peer whose pipeline is no longer usable, so the next query
+        rebuilds instead of reusing dead sockets.
+        """
+        with self.peer_lock:
+            peer = self.peers.pop(model_name, None)
+            scheduler = self.schedulers.pop(model_name, None)
+            self._peer_last_used.pop(model_name, None)
+            self._gen_threads.pop(model_name, None)
+
+        if peer is None and scheduler is None:
+            return
+
+        # Registries are already updated, so this runs unlocked: in-flight
+        # requests finish while other models keep serving.
+        if scheduler is not None:
+            scheduler.drain(timeout=30.0)
+            scheduler.stop()
+        if peer is not None:
+            try:
+                peer.send_stop()
+            except Exception:
+                pass
+            try:
+                peer.cleanup()
+            except Exception:
+                pass
+        if self.local.device.startswith("cuda"):
+            torch.cuda.empty_cache()
+
+        print(f"[Daemon] Released '{model_name}' — the next query will rebuild it")
+
+    def _peer_is_healthy(self, model_name):
+        """
+        Whether a loaded peer can still serve a query. A peer with a loaded
+        model but a dead generation loop or dead scheduler is worse than no
+        peer at all: it accepts the query and then never responds.
+        """
+        with self.peer_lock:
+            peer = self.peers.get(model_name)
+            scheduler = self.schedulers.get(model_name)
+            gen_thread = self._gen_threads.get(model_name)
+
+        if peer is None or peer.model is None:
+            return False
+
+        if peer.is_master:
+            if scheduler is None or not scheduler.running:
+                print(f"[Daemon] '{model_name}' has no live scheduler")
+                return False
+        else:
+            if gen_thread is None or not gen_thread.is_alive():
+                print(f"[Daemon] '{model_name}' generation loop is no longer running")
+                return False
+
+        return True
+
+    def shutdown(self):
+        """
+        Stop accepting work and tell connected peers before the process
+        goes away, so they release their peers cleanly rather than
+        discovering the loss as an abrupt socket close.
+        """
+        if not self.running and not self.peers:
+            return
+        print("[Daemon] Shutting down — notifying peers")
+        self.running = False
+
+        for model_name in list(self.peers.keys()):
+            peer = self.peers.get(model_name)
+            if peer is None:
+                continue
+            try:
+                peer.send_stop()
+                print(f"[Daemon] Sent stop for '{model_name}'")
+            except Exception:
+                pass
+
+        for model_name in list(self.peers.keys()):
+            self._release_peer(model_name)
+
+        print("[Daemon] Shutdown complete")
 
     def _handle_connection(self, conn, addr):
         """Handle one incoming request. Runs in its own thread."""
@@ -77,6 +185,8 @@ class Daemon:
                 self._handle_config_query(conn, payload)
             elif msg_type == MSG_QUERY:
                 self._handle_query(conn, payload)
+            elif msg_type == MSG_LOG_REQ:
+                self._handle_log_request(conn, payload)
             else:
                 print(f"[Daemon] Unknown message type {msg_type} from {addr}")
 
@@ -88,6 +198,26 @@ class Daemon:
             traceback.print_exc()
         finally:
             conn.close()
+
+    def _handle_log_request(self, conn, payload):
+        """
+        Return console output this machine has produced since a given
+        sequence number. Each node's logs live only on that node, so the
+        UI asks every node in the pipeline directly.
+        """
+        from logbuffer import BUFFER
+        try:
+            since = int(payload.decode("utf-8") or 0)
+        except (ValueError, UnicodeDecodeError):
+            since = 0
+
+        response = json.dumps({
+            "ip": self.local.tailscale_ip,
+            "device": self.local.device,
+            "lines": BUFFER.read(since=since),
+            "latest_seq": BUFFER.latest_seq(),
+        })
+        send_message(conn, MSG_LOG_RESP, response.encode("utf-8"))
 
     def _handle_ping(self, conn):
         """Respond with availability + our IP."""
@@ -147,9 +277,14 @@ class Daemon:
             existing_peer = self.peers.get(model_name)
 
         if existing_peer is not None and existing_peer.shared.pipeline == shared.pipeline:
-            print(f"[Daemon] Same pipeline already active for {model_name} — routing as warm query")
-            self._run_query_on_existing_peer(conn, query, model_name)
-            return
+            if self._peer_is_healthy(model_name):
+                print(f"[Daemon] Same pipeline already active for {model_name} "
+                      f"— routing as warm query")
+                self._run_query_on_existing_peer(conn, query, model_name)
+                return
+            print(f"[Daemon] Pipeline for {model_name} matches but is no longer "
+                  f"usable — rebuilding")
+            self._release_peer(model_name)
 
         # ── Check 2: another thread already creating this model? Wait for it ──
         with self.peer_lock:
@@ -172,28 +307,15 @@ class Daemon:
             return
 
         # ── Full rebuild: tear down old, create new ──
+        #
+        # None of this holds peer_lock. Draining and model loading take
+        # seconds to minutes, and holding the lock across them would stall
+        # every query for every *other* model behind this one.
         try:
-            with self.peer_lock:
-                if model_name in self.schedulers:
-                    print(f"[Daemon] Draining scheduler for {model_name} before rebuild...")
-                    self.schedulers[model_name].drain()
-                    self.schedulers[model_name].stop()
-                    del self.schedulers[model_name]
-                    print(f"[Daemon] Scheduler torn down")
-                if model_name in self.peers:
-                    try:
-                        self.peers[model_name].send_stop()
-                    except Exception:
-                        pass
-                    self.peers[model_name].cleanup()
-                    del self.peers[model_name]
-                    del self._peer_last_used[model_name]
-                if model_name in self._gen_threads:
-                    del self._gen_threads[model_name]
+            self._release_peer(model_name)
+            self._make_room_for(model_name)
 
-                self._ensure_memory_headroom()
-
-            # create peer, load model
+            print(f"[Daemon] Loading '{model_name}'...")
             peer = InferencePeer(shared, self.local)
             peer.load_query_into_model(query)
 
@@ -242,17 +364,14 @@ class Daemon:
 
             print(f"[Scheduler] Submitting first request (session={query.session_id})")
             scheduler.submit(request)
-            request.done_event.wait()
-
-            response = request.result
-            print(f"[Daemon] First query complete — sending MSG_RESPONSE ({len(response)} chars)")
-            send_message(conn, MSG_RESPONSE, response.encode("utf-8"))
-            print(f"[Daemon] MSG_RESPONSE sent")
+            self._stream_and_respond(conn, request, label="First query", model_name=model_name)
         else:
-            # Worker/tail: start long-running generation loop in a thread
+            # Worker/tail: start long-running generation loop in a thread.
+            # Wrapped so an upstream node going away releases this peer
+            # instead of silently killing the thread.
             gen_thread = threading.Thread(
-                target=peer.run_generation,
-                kwargs={"query": query},
+                target=self._run_generation_guarded,
+                args=(peer, query, model_name, my_entry["role"]),
                 daemon=True,
             )
             gen_thread.start()
@@ -276,6 +395,13 @@ class Daemon:
 
         if peer is None or peer.model is None:
             print(f"[Daemon] No peer for model '{model_name}' — rejecting MSG_QUERY")
+            send_message(conn, MSG_QUERY_FAIL)
+            return
+
+        if not self._peer_is_healthy(model_name):
+            print(f"[Daemon] Peer for '{model_name}' is stale — rejecting so the "
+                  f"orchestrator falls back to a cold rebuild")
+            self._release_peer(model_name)
             send_message(conn, MSG_QUERY_FAIL)
             return
 
@@ -360,15 +486,71 @@ class Daemon:
                         send_message(conn, MSG_QUERY_FAIL)
                         return
 
-            request.done_event.wait()
-
-            response = request.result
-            print(f"[Daemon] Query complete — sending MSG_RESPONSE ({len(response)} chars)")
-            send_message(conn, MSG_RESPONSE, response.encode("utf-8"))
-            print(f"[Daemon] MSG_RESPONSE sent")
+            self._stream_and_respond(conn, request, label="Query", model_name=model_name)
         else:
             # Worker/tail already in their long-running loops — nothing to do
             print(f"[Daemon] Warm query ack — {peer.role} loop already running")
+
+    def _stream_and_respond(self, conn, request, label="Query", model_name=None):
+        """
+        Forward text deltas to the orchestrator as they are generated, then
+        send the final response.
+
+        If the orchestrator hangs up mid-stream we stop sending but let
+        generation finish — cutting it off would leave the KV cache in an
+        inconsistent state and corrupt the next query on that session.
+        """
+        import queue as _queue
+
+        streamed = 0
+        while True:
+            try:
+                delta = request.token_queue.get(timeout=0.5)
+            except _queue.Empty:
+                if request.done_event.is_set():
+                    break
+                continue
+
+            if delta is None:          # sentinel: Scheduler finished
+                break
+
+            try:
+                send_message(conn, MSG_TOKEN_STREAM, delta.encode("utf-8"))
+                streamed += 1
+            except Exception as e:
+                print(f"[Daemon] Stream to client broke ({e}) — "
+                      f"finishing generation anyway")
+                break
+
+        request.done_event.wait()
+
+        if getattr(request, "error", None):
+            print(f"[Daemon] {label} failed: {request.error}")
+
+            # If the pipeline itself broke, drop the peer. Leaving it
+            # registered means _peer_is_healthy still sees a loaded model and
+            # a live scheduler, so every later query would be routed onto the
+            # same dead sockets instead of rebuilding.
+            if model_name:
+                print(f"[Daemon] Releasing '{model_name}' so the next query rebuilds")
+                threading.Thread(
+                    target=self._release_peer, args=(model_name,), daemon=True
+                ).start()
+
+            try:
+                send_message(conn, MSG_QUERY_FAIL)
+            except Exception:
+                pass
+            return
+
+        response = request.result or ""
+        print(f"[Daemon] {label} complete — streamed {streamed} deltas, "
+              f"sending MSG_RESPONSE ({len(response)} chars)")
+        try:
+            send_message(conn, MSG_RESPONSE, response.encode("utf-8"))
+            print(f"[Daemon] MSG_RESPONSE sent")
+        except Exception as e:
+            print(f"[Daemon] Could not send final response: {e}")
 
     def _get_memory_status(self):
         """Returns (total_bytes, free_bytes) for the compute device."""
@@ -384,51 +566,102 @@ class Daemon:
             free = mem.available
         return total, free
 
-    def _ensure_memory_headroom(self):
-        """Evict LRU models until free memory >= overhead * total."""
-        overhead = self.local.overhead
-        total, free = self._get_memory_status()
-        required_free = int(total * overhead)
+    def _peer_is_busy(self, model_name, peer):
+        """
+        Whether this model is mid-generation. Evicting a busy peer would
+        cut off a conversation in progress and force the next query to
+        cold start, so busy peers are left alone.
+        """
+        if model_name in self._creating:
+            return True    # still being wired up
 
-        while free < required_free and self._peer_last_used:
-            total_gb = total / 1e9
-            free_gb = free / 1e9
-            req_gb = required_free / 1e9
-            print(f"[Daemon] Memory tight: {free_gb:.1f}GB free < {req_gb:.1f}GB required "
-                  f"({overhead*100:.0f}% of {total_gb:.1f}GB)")
-            self._evict_lru_peer()
+        scheduler = self.schedulers.get(model_name)
+        if scheduler is not None:
+            if scheduler.active_count() > 0:
+                return True
+            # A scheduler that has just started but not yet received its
+            # first request is still mid-setup.
+            return (time.time() - getattr(peer, "last_activity", 0.0)) < 10.0
+        # Worker/tail have no scheduler; recent hidden states mean tokens
+        # are still flowing through this node.
+        return (time.time() - getattr(peer, "last_activity", 0.0)) < 5.0
+
+    def _take_eviction_candidate(self, exclude=None):
+        """
+        Under the lock, pick the least recently used *idle* model and
+        remove it from the registries so nobody else can route to it.
+
+        Returns (model_name, peer, scheduler) or None if every remaining
+        model is busy. The caller tears the peer down outside the lock —
+        draining can take seconds and must not block other models.
+        """
+        with self.peer_lock:
+            idle = [
+                name for name, peer in self.peers.items()
+                if name != exclude and not self._peer_is_busy(name, peer)
+            ]
+            if not idle:
+                return None
+
+            oldest = min(idle, key=lambda n: self._peer_last_used.get(n, 0.0))
+            peer = self.peers.pop(oldest, None)
+            scheduler = self.schedulers.pop(oldest, None)
+            self._peer_last_used.pop(oldest, None)
+            self._gen_threads.pop(oldest, None)
+            return oldest, peer, scheduler
+
+    def _teardown_peer(self, model_name, peer, scheduler):
+        """Drain and release an already-unregistered peer. Never holds the lock."""
+        if scheduler is not None:
+            scheduler.drain(timeout=30.0)
+            scheduler.stop()
+        if peer is not None:
+            try:
+                peer.send_stop()
+            except Exception:
+                pass
+            try:
+                peer.cleanup()
+            except Exception:
+                pass
+        if self.local.device.startswith("cuda"):
+            torch.cuda.empty_cache()
+        print(f"[Daemon] Unloaded '{model_name}'")
+
+    def _make_room_for(self, model_name, timeout=90.0):
+        """
+        Free memory for a model about to load, without holding peer_lock
+        while waiting. Idle models are unloaded first; a model that is
+        actively generating is waited for rather than interrupted.
+        """
+        deadline = time.time() + timeout
+        announced = False
+
+        while True:
             total, free = self._get_memory_status()
+            required = int(total * self.local.overhead)
+            if free >= required:
+                return
 
-    def _evict_lru_peer(self):
-        """Evict the least recently used model to free memory.
-        Drains the Scheduler first so in-flight requests complete
-        before the peer is torn down."""
-        if not self._peer_last_used:
-            return
-        oldest = min(self._peer_last_used, key=self._peer_last_used.get)
-        print(f"[Daemon] Evicting LRU model '{oldest}'")
+            if not announced:
+                print(f"[Daemon] Need {required/1e9:.1f}GB free to load "
+                      f"'{model_name}', have {free/1e9:.1f}GB")
+                announced = True
 
-        # Drain and stop Scheduler if one exists (master node)
-        if oldest in self.schedulers:
-            print(f"[Daemon] Draining scheduler for '{oldest}' before eviction...")
-            self.schedulers[oldest].drain()
-            self.schedulers[oldest].stop()
-            del self.schedulers[oldest]
-            print(f"[Daemon] Scheduler drained and stopped")
+            victim = self._take_eviction_candidate(exclude=model_name)
+            if victim is not None:
+                name, peer, scheduler = victim
+                print(f"[Daemon] Unloading idle model '{name}' to make room")
+                self._teardown_peer(name, peer, scheduler)
+                continue
 
-        # Send MSG_STOP to break worker/tail loops
-        try:
-            self.peers[oldest].send_stop()
-        except Exception:
-            pass
-
-        self.peers[oldest].cleanup()
-        del self.peers[oldest]
-        del self._peer_last_used[oldest]
-
-        if oldest in self._gen_threads:
-            del self._gen_threads[oldest]
-
+            # Everything still loaded is mid-generation. Wait for it to
+            # finish rather than cutting off a conversation.
+            if time.time() >= deadline:
+                print(f"[Daemon] Still short on memory after {timeout:.0f}s "
+                      f"— loading '{model_name}' anyway")
+                return
+            time.sleep(0.5)
 
 # ================================================================
 # INITIATOR-SIDE: discovery and benchmark collection
