@@ -117,10 +117,14 @@ textarea::placeholder{color:var(--muted)}
   max-width:720px;margin:8px auto 0;display:flex;gap:14px;align-items:center;
   font-family:var(--mono);font-size:11px;color:var(--muted);
 }
-.meta select{
+.meta select,.meta input[type=number]{
   background:var(--panel);border:1px solid var(--edge);border-radius:3px;
-  padding:3px 6px;font-family:var(--mono);font-size:11px;
+  padding:3px 6px;font-family:var(--mono);font-size:11px;color:var(--text);
 }
+.meta input[type=number]{width:66px}
+.meta select:focus,.meta input:focus{border-color:#38536a;outline:none}
+.meta .sep{color:var(--edge)}
+.meta #status{margin-left:auto;color:var(--signal)}
 
 /* ── Right rail ────────────────────────────────── */
 .rail{
@@ -267,8 +271,13 @@ textarea::placeholder{color:var(--muted)}
         <button class="send" id="send">Send</button>
       </div>
       <div class="meta">
-        <span>Model</span>
+        <label for="model">Model</label>
         <select id="model"></select>
+        <span class="sep">|</span>
+        <label for="tokens">Max reply</label>
+        <input type="number" id="tokens" min="1" max="4096" step="50"
+               value="200" title="Longest reply the model will generate, in tokens">
+        <span>tokens</span>
         <span id="status"></span>
       </div>
     </div>
@@ -477,6 +486,16 @@ async function refreshPipeline(){
   ).join('');
 }
 
+// ── Reply length ───────────────────────────────
+function replyTokens(){
+  const n = parseInt($('tokens').value, 10);
+  if(Number.isNaN(n)) return 200;
+  return Math.min(4096, Math.max(1, n));
+}
+
+// Normalize the field on blur so it always shows what will be sent
+$('tokens').addEventListener('blur', () => { $('tokens').value = replyTokens(); });
+
 // ── Send ───────────────────────────────────────
 async function send(){
   const text = $('input').value.trim();
@@ -501,7 +520,7 @@ async function send(){
         session_id: currentSession,
         model: $('model').value,
         prompt: text,
-        tokens: 200
+        tokens: replyTokens()
       })
     });
 
