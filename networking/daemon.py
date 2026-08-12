@@ -364,7 +364,7 @@ class Daemon:
 
             print(f"[Scheduler] Submitting first request (session={query.session_id})")
             scheduler.submit(request)
-            self._stream_and_respond(conn, request, label="First query")
+            self._stream_and_respond(conn, request, label="First query", model_name=model_name)
         else:
             # Worker/tail: start long-running generation loop in a thread.
             # Wrapped so an upstream node going away releases this peer
@@ -486,12 +486,12 @@ class Daemon:
                         send_message(conn, MSG_QUERY_FAIL)
                         return
 
-            self._stream_and_respond(conn, request, label="Query")
+            self._stream_and_respond(conn, request, label="Query", model_name=model_name)
         else:
             # Worker/tail already in their long-running loops — nothing to do
             print(f"[Daemon] Warm query ack — {peer.role} loop already running")
 
-    def _stream_and_respond(self, conn, request, label="Query"):
+    def _stream_and_respond(self, conn, request, label="Query", model_name=None):
         """
         Forward text deltas to the orchestrator as they are generated, then
         send the final response.
@@ -526,6 +526,17 @@ class Daemon:
 
         if getattr(request, "error", None):
             print(f"[Daemon] {label} failed: {request.error}")
+
+            # If the pipeline itself broke, drop the peer. Leaving it
+            # registered means _peer_is_healthy still sees a loaded model and
+            # a live scheduler, so every later query would be routed onto the
+            # same dead sockets instead of rebuilding.
+            if model_name:
+                print(f"[Daemon] Releasing '{model_name}' so the next query rebuilds")
+                threading.Thread(
+                    target=self._release_peer, args=(model_name,), daemon=True
+                ).start()
+
             try:
                 send_message(conn, MSG_QUERY_FAIL)
             except Exception:
@@ -561,9 +572,16 @@ class Daemon:
         cut off a conversation in progress and force the next query to
         cold start, so busy peers are left alone.
         """
+        if model_name in self._creating:
+            return True    # still being wired up
+
         scheduler = self.schedulers.get(model_name)
         if scheduler is not None:
-            return scheduler.active_count() > 0
+            if scheduler.active_count() > 0:
+                return True
+            # A scheduler that has just started but not yet received its
+            # first request is still mid-setup.
+            return (time.time() - getattr(peer, "last_activity", 0.0)) < 10.0
         # Worker/tail have no scheduler; recent hidden states mean tokens
         # are still flowing through this node.
         return (time.time() - getattr(peer, "last_activity", 0.0)) < 5.0

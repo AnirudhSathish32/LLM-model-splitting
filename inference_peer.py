@@ -15,7 +15,9 @@ from config import (
 
 class InferencePeer:
     def __init__(self, shared: SharedConfig, local: LocalConfig):
-        self.last_activity = 0.0   # set by receive_hidden; used to tell idle from busy
+        # Counts as busy from creation: a peer still being wired up has no
+        # traffic yet, and must not be evicted out from under its own query.
+        self.last_activity = time.time()
         self.shared = shared
         self.local = local
 
@@ -265,11 +267,18 @@ class InferencePeer:
         Returns ("token", token_tensor) or ("eos", None).
         """
         msg_type, payload = read_message(self.upstream_conn)
+        self.last_activity = time.time()
+
         if msg_type == MSG_EOS:
             return "eos", None
         if msg_type == MSG_TOKEN:
             token = torch.frombuffer(bytearray(payload), dtype=torch.int64)
             return "token", token
+        if msg_type == MSG_STOP:
+            # A downstream node is shutting this pipeline down — typically
+            # because it unloaded this model to make room for another one.
+            # Not a protocol error: the pipeline simply no longer exists.
+            return "stop", None
         raise ValueError(f"Expected MSG_TOKEN or MSG_EOS, got {msg_type}")
 
     def send_eos(self):
@@ -439,6 +448,13 @@ class InferencePeer:
         # Receive token from tail
         msg_string, token = self.receive_token()
         print(f"[Token {tc}] ({sid}) received '{msg_string}'", flush=True)
+
+        if msg_string == "stop":
+            print(f"[Token {tc}] ({sid}) downstream node shut down this pipeline",
+                  flush=True)
+            raise ConnectionError(
+                "Pipeline was shut down by a downstream node "
+                "(it likely unloaded this model to free memory)")
 
         if msg_string == "eos":
             print(f"[Token {tc}] ({sid}) EOS — request complete", flush=True)
