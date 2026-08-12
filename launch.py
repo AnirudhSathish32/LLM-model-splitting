@@ -26,6 +26,11 @@ import webbrowser
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# Tee console output into a ring buffer the UI can read. Must happen
+# before the daemon or server produce any output.
+from logbuffer import install as install_log_capture
+install_log_capture()
+
 
 def start_daemon(daemon_port):
     """Run the inference daemon in a background thread."""

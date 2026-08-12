@@ -28,6 +28,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import LocalConfig
 from session import SessionManager
 from user_query import UserQuery, send_query, clear_pipeline, get_pipeline_info
+from logbuffer import BUFFER
+from config import MSG_LOG_REQ, MSG_LOG_RESP
+from networking.protocol import send_message, read_message
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -141,6 +144,60 @@ def delete_session(session_id: str):
     session_manager.delete_session(session_id)
     return {"deleted": session_id}
 
+
+
+
+# ── Logs ─────────────────────────────────────────────────────
+
+def _fetch_remote_logs(ip, since, daemon_port=65433, timeout=3.0):
+    """Ask another node for its recent output over the daemon port."""
+    import socket
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+    try:
+        sock.connect((ip, daemon_port))
+        send_message(sock, MSG_LOG_REQ, str(since).encode("utf-8"))
+        msg_type, payload = read_message(sock)
+        if msg_type != MSG_LOG_RESP:
+            return {"error": f"unexpected reply {msg_type}"}
+        return json.loads(payload.decode("utf-8"))
+    finally:
+        sock.close()
+
+
+@app.get("/api/logs")
+def logs(ip: str = "", since: int = 0):
+    """
+    Recent console output. Omit ip (or pass this machine's) to read the
+    local buffer directly; any other ip is fetched from that node.
+    """
+    if not ip or ip == local.tailscale_ip:
+        return {
+            "ip": local.tailscale_ip,
+            "device": local.device,
+            "local": True,
+            "lines": BUFFER.read(since=since),
+            "latest_seq": BUFFER.latest_seq(),
+        }
+
+    try:
+        data = _fetch_remote_logs(ip, since)
+        data["local"] = False
+        return data
+    except Exception as e:
+        return {
+            "ip": ip,
+            "local": False,
+            "lines": [],
+            "latest_seq": since,
+            "error": f"{type(e).__name__}: {e}",
+        }
+
+
+@app.post("/api/logs/clear")
+def clear_logs():
+    BUFFER.clear()
+    return {"cleared": True}
 
 
 # ── Settings ─────────────────────────────────────────────────

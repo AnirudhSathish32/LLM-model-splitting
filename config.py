@@ -95,6 +95,8 @@ MSG_CONFIG         = 25
 MSG_READY          = 26
 MSG_QUERY          = 27
 MSG_QUERY_FAIL     = 28
+MSG_LOG_REQ        = 29
+MSG_LOG_RESP       = 30
 MSG_START          = 31
 MSG_TOKEN_STREAM   = 32   # incremental text delta, master → orchestrator
 

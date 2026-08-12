@@ -3,6 +3,7 @@ import os, sys, json, socket, threading, time, torch, io
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config import (
+    MSG_LOG_REQ, MSG_LOG_RESP,
     MSG_TOKEN_STREAM,
     SharedConfig, LocalConfig,
     MSG_PING, MSG_PONG,
@@ -78,6 +79,8 @@ class Daemon:
                 self._handle_config_query(conn, payload)
             elif msg_type == MSG_QUERY:
                 self._handle_query(conn, payload)
+            elif msg_type == MSG_LOG_REQ:
+                self._handle_log_request(conn, payload)
             else:
                 print(f"[Daemon] Unknown message type {msg_type} from {addr}")
 
@@ -89,6 +92,26 @@ class Daemon:
             traceback.print_exc()
         finally:
             conn.close()
+
+    def _handle_log_request(self, conn, payload):
+        """
+        Return console output this machine has produced since a given
+        sequence number. Each node's logs live only on that node, so the
+        UI asks every node in the pipeline directly.
+        """
+        from logbuffer import BUFFER
+        try:
+            since = int(payload.decode("utf-8") or 0)
+        except (ValueError, UnicodeDecodeError):
+            since = 0
+
+        response = json.dumps({
+            "ip": self.local.tailscale_ip,
+            "device": self.local.device,
+            "lines": BUFFER.read(since=since),
+            "latest_seq": BUFFER.latest_seq(),
+        })
+        send_message(conn, MSG_LOG_RESP, response.encode("utf-8"))
 
     def _handle_ping(self, conn):
         """Respond with availability + our IP."""

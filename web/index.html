@@ -44,9 +44,11 @@ button,input,textarea,select{font:inherit;color:inherit}
 }
 
 .app{
-  display:grid;grid-template-columns:280px 1fr;
+  display:grid;grid-template-columns:280px 1fr 0;
   height:100vh;height:100dvh;overflow:hidden;
+  transition:grid-template-columns .18s ease;
 }
+.app.logs-open{grid-template-columns:280px 1fr 400px}
 
 /* ── Center column ─────────────────────────────── */
 .main{display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden}
@@ -141,6 +143,68 @@ textarea::placeholder{color:var(--muted)}
 .meta select:focus,.meta input:focus{border-color:#38536a;outline:none}
 .meta .sep{color:var(--edge)}
 .meta #status{margin-left:auto;color:var(--signal)}
+
+/* ── Activity panel (right) ────────────────────── */
+.logs{
+  border-left:1px solid var(--edge);background:var(--panel);
+  display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden;
+}
+.app:not(.logs-open) .logs{display:none}
+.logs-head{
+  flex-shrink:0;padding:14px 16px;border-bottom:1px solid var(--edge);
+  display:flex;align-items:center;justify-content:space-between;gap:8px;
+}
+.logs-head h2{
+  font-family:var(--mono);font-size:10px;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--muted);font-weight:500;
+}
+.logs-actions{display:flex;gap:4px;align-items:center}
+.logs-body{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain}
+
+.node{border-bottom:1px solid var(--edge)}
+.node-head{
+  padding:9px 14px;display:flex;align-items:center;gap:9px;cursor:pointer;
+  user-select:none;
+}
+.node-head:hover{background:var(--raise)}
+.caret{
+  color:var(--muted);font-size:9px;width:9px;flex-shrink:0;
+  transition:transform .15s;
+}
+.node.open .caret{transform:rotate(90deg)}
+.node-id{flex:1;min-width:0}
+.node-role{
+  font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--muted);
+}
+.node.is-master .node-role{color:var(--amber)}
+.node-ip{font-family:var(--mono);font-size:12px;color:var(--text)}
+.node-meta{
+  font-family:var(--mono);font-size:10px;color:var(--muted);
+  text-align:right;flex-shrink:0;
+}
+.dot{
+  width:6px;height:6px;border-radius:50%;background:var(--muted);
+  flex-shrink:0;
+}
+.dot.live{background:var(--signal)}
+.dot.down{background:var(--danger)}
+
+.node-lines{display:none;padding:2px 0 8px;background:var(--ink)}
+.node.open .node-lines{display:block}
+.line{
+  font-family:var(--mono);font-size:11px;line-height:1.5;
+  padding:1px 14px 1px 30px;text-indent:-16px;
+  white-space:pre-wrap;overflow-wrap:anywhere;color:var(--muted);
+}
+.line.generation{color:#9FB6C9}
+.line.scheduler{color:var(--signal)}
+.line.orchestrator{color:var(--amber)}
+.line.daemon{color:#8FA3B5}
+.line.error{color:var(--danger)}
+.node-note{
+  padding:8px 14px 10px 30px;font-size:12px;color:var(--muted);
+}
 
 /* ── Right rail ────────────────────────────────── */
 .rail{
@@ -295,9 +359,21 @@ textarea::placeholder{color:var(--muted)}
                value="200" title="Longest reply the model will generate, in tokens">
         <span>tokens</span>
         <span id="status"></span>
+        <button class="act" id="toggleLogs" style="margin-left:8px">Activity</button>
       </div>
     </div>
   </div>
+
+  <aside class="logs" id="logsPanel">
+    <div class="logs-head">
+      <h2>Activity</h2>
+      <div class="logs-actions">
+        <button class="act" id="logsClear" title="Clear this machine's log">Clear</button>
+        <button class="act" id="logsClose" title="Hide panel">×</button>
+      </div>
+    </div>
+    <div class="logs-body" id="logsBody"></div>
+  </aside>
 
 </div>
 
@@ -662,6 +738,120 @@ $('scrim').onclick = e => { if(e.target === $('scrim')) closeSettings(); };
 document.addEventListener('keydown', e => {
   if(e.key === 'Escape' && $('scrim').classList.contains('open')) closeSettings();
 });
+
+
+// ── Activity panel ─────────────────────────────
+let logsOpen = false, logPoll = null;
+const nodeState = {};   // ip -> {since, expanded, lines, role, layers, error}
+
+function toggleLogs(){
+  logsOpen = !logsOpen;
+  document.querySelector('.app').classList.toggle('logs-open', logsOpen);
+  if(logsOpen){ pollLogs(); logPoll = setInterval(pollLogs, 1000); }
+  else { clearInterval(logPoll); logPoll = null; }
+}
+
+async function knownNodes(){
+  const model = $('model').value;
+  const {pipeline, self_ip} = await (await fetch(
+    '/api/pipeline?model=' + encodeURIComponent(model))).json();
+
+  if(pipeline && pipeline.mode === 'distributed' && pipeline.stages.length){
+    return pipeline.stages.map(st => ({
+      ip: st.ip, role: st.role, self: st.ip === self_ip,
+      layers: `layers ${st.layer_start}-${st.layer_end}`
+    }));
+  }
+  // No pipeline yet, or single-node: show this machine alone.
+  return [{ip: self_ip || '', role: 'this machine', self: true, layers: ''}];
+}
+
+async function pollLogs(){
+  if(!logsOpen) return;
+  const nodes = await knownNodes();
+
+  await Promise.all(nodes.map(async n => {
+    const st = nodeState[n.ip] ||= {since: 0, expanded: n.self, lines: []};
+    st.role = n.role; st.layers = n.layers; st.self = n.self;
+    try{
+      const r = await fetch(`/api/logs?ip=${encodeURIComponent(n.ip)}&since=${st.since}`);
+      const d = await r.json();
+      st.error = d.error || null;
+      if(d.lines && d.lines.length){
+        st.lines.push(...d.lines);
+        if(st.lines.length > 400) st.lines = st.lines.slice(-400);
+        st.since = d.latest_seq;
+      }
+      st.device = d.device;
+    }catch(e){ st.error = 'unreachable'; }
+  }));
+
+  renderLogs(nodes);
+}
+
+function renderLogs(nodes){
+  const body = $('logsBody');
+
+  // Preserve scroll position unless the user is pinned to the bottom
+  const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 40;
+
+  body.innerHTML = '';
+  for(const n of nodes){
+    const st = nodeState[n.ip] || {lines: [], expanded: false};
+    const el = document.createElement('div');
+    el.className = 'node' + (st.expanded ? ' open' : '')
+                 + (n.role === 'master' ? ' is-master' : '');
+
+    const dot = st.error ? 'down' : (st.lines.length ? 'live' : '');
+    el.innerHTML = `
+      <div class="node-head">
+        <span class="caret">▶</span>
+        <span class="dot ${dot}"></span>
+        <span class="node-id">
+          <span class="node-role">${esc(n.role)}${n.self ? ' · this machine' : ''}</span>
+          <div class="node-ip">${esc(n.ip || 'unknown')}</div>
+        </span>
+        <span class="node-meta">${esc(n.layers || '')}<br>${st.lines.length} lines</span>
+      </div>
+      <div class="node-lines"></div>`;
+
+    const lines = el.querySelector('.node-lines');
+    if(st.error){
+      lines.innerHTML = `<div class="node-note">Could not reach this node: ${esc(st.error)}
+        <br>It may not be running the app yet.</div>`;
+    }else if(!st.lines.length){
+      lines.innerHTML = `<div class="node-note">No output yet.</div>`;
+    }else{
+      for(const ln of st.lines){
+        const d = document.createElement('div');
+        d.className = 'line ' + ln.source;
+        d.textContent = ln.text;
+        lines.appendChild(d);
+      }
+    }
+
+    el.querySelector('.node-head').onclick = () => {
+      st.expanded = !st.expanded;
+      el.classList.toggle('open', st.expanded);
+    };
+    body.appendChild(el);
+  }
+
+  if(atBottom){
+    for(const open of body.querySelectorAll('.node.open .node-lines')){
+      open.scrollTop = open.scrollHeight;
+    }
+    body.scrollTop = body.scrollHeight;
+  }
+}
+
+$('toggleLogs').onclick = toggleLogs;
+$('logsClose').onclick = toggleLogs;
+$('logsClear').onclick = async () => {
+  await fetch('/api/logs/clear', {method:'POST'});
+  for(const ip in nodeState){ nodeState[ip].lines = []; }
+  pollLogs();
+};
 
 (async function init(){
   const {models} = await (await fetch('/api/models')).json();
