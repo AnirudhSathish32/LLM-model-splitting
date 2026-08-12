@@ -71,8 +71,8 @@ fit the model.
 - One machine with a GPU is recommended but not required
 
 Machines can be a mix of Windows, Linux, and macOS, and a mix of GPU and
-CPU-only. Roughly 15 GB of free disk per machine while setting up a model,
-much less afterwards.
+CPU-only. You need room for the model twice while splitting it (about 12 GB for a
+3B model), but only the layer files afterwards.
 
 ## Install
 
@@ -234,8 +234,9 @@ Roughly 9 MB instead of 6 GB. Safe to delete: `model-0000X.safetensors`,
 which read JSON and never touch the weights — the layer files supply
 everything else.
 
-(The single-machine fallback path is the one exception: it loads the full
-model normally. Keep the safetensors if you want that path to work.)
+This applies to every path, including single-machine mode — that rebuilds
+the complete model from the layer files too, so there is no reason to keep
+the originals.
 
 **Repeat on every machine.** Each one needs the five JSON files and its own
 layer files. You can copy them across rather than downloading again.
@@ -376,6 +377,10 @@ signed in, then `hf auth login`.
 **`ModuleNotFoundError` on a package you installed.** Almost always a
 deactivated virtual environment in a new terminal. Check for `(.venv)` in
 your prompt.
+
+**"missing N of M layer files".** The split is incomplete for that model.
+Re-run `python create_layer_files.py <model>` — that step needs the original
+weights, so re-download them first if you have already deleted them.
 
 **`no kernel image is available`.** Wrong PyTorch build for your GPU. Re-run
 `python install.py`, or force a version with `--cuda 12.8`.

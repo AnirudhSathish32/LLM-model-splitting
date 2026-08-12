@@ -308,6 +308,163 @@ def send_query(query, local: LocalConfig, session_manager, daemon_port=65433, on
     return response
 
 # ═══════════════════════════════════════════════════════════════
+# LOCAL MODEL ASSEMBLY — rebuild a full model from per-layer files
+# ═══════════════════════════════════════════════════════════════
+
+class MissingLayerFiles(RuntimeError):
+    """Raised when layers/<model>/ can't produce a complete model."""
+
+
+def _check_layer_files(model_dir, layers_dir, model_name):
+    """
+    Verify everything needed to assemble the full model is present before
+    loading any of it, so a missing file fails immediately with a useful
+    message instead of part-way through a multi-GB load.
+
+    Returns (config, expected_layer_count, needs_head).
+    """
+    import os
+    from transformers import AutoConfig
+
+    if not os.path.isdir(layers_dir):
+        raise MissingLayerFiles(
+            f"No layer files for '{model_name}'.\n"
+            f"  Expected directory: {layers_dir}\n"
+            f"  Create it with:     python create_layer_files.py {model_name}"
+        )
+
+    # config.json / tokenizer live in models/, not layers/
+    required_json = [
+        "config.json", "tokenizer_config.json", "special_tokens_map.json",
+    ]
+    missing_json = [
+        f for f in required_json
+        if not os.path.exists(os.path.join(model_dir, f))
+    ]
+    if not any(os.path.exists(os.path.join(model_dir, f))
+               for f in ("tokenizer.json", "tokenizer.model")):
+        missing_json.append("tokenizer.json (or tokenizer.model)")
+
+    if missing_json:
+        raise MissingLayerFiles(
+            f"'{model_name}' is missing tokenizer/config files in {model_dir}:\n"
+            + "".join(f"    {f}\n" for f in missing_json)
+            + "  These are small JSON files and must be kept even after "
+              "splitting the weights."
+        )
+
+    config = AutoConfig.from_pretrained(model_dir)
+    n_layers = config.num_hidden_layers
+
+    # Tied embeddings mean lm_head shares embed_tokens' weight, so a
+    # head file may legitimately be absent or empty.
+    needs_head = not getattr(config, "tie_word_embeddings", False)
+
+    expected = [f"layer_{i}.safetensors" for i in range(n_layers)]
+    expected += ["embed_tokens.safetensors", "norm.safetensors"]
+    if needs_head:
+        expected.append("head.safetensors")
+
+    missing = [f for f in expected
+               if not os.path.exists(os.path.join(layers_dir, f))]
+
+    if missing:
+        shown = missing[:8]
+        more = f"    ...and {len(missing) - 8} more\n" if len(missing) > 8 else ""
+        raise MissingLayerFiles(
+            f"'{model_name}' is missing {len(missing)} of {len(expected)} "
+            f"layer files in {layers_dir}:\n"
+            + "".join(f"    {f}\n" for f in shown) + more
+            + f"  Re-create them with: python create_layer_files.py {model_name}\n"
+              f"  (that step needs the full weights in {model_dir})"
+        )
+
+    return config, n_layers, needs_head
+
+
+def _has_full_weights(model_dir):
+    """Whether the original multi-GB weight files are still on disk."""
+    import os, glob
+    if not os.path.isdir(model_dir):
+        return False
+    return bool(glob.glob(os.path.join(model_dir, "*.safetensors"))
+                or glob.glob(os.path.join(model_dir, "*.bin")))
+
+
+def _assemble_local_model(model_dir, layers_dir, model_name, dtype, device):
+    """
+    Rebuild a complete model from per-layer safetensors.
+
+    The distributed path loads only its own slice; this loads every layer
+    plus embeddings, norm, and head, so the single-machine path no longer
+    needs the original multi-GB weight files on disk.
+    """
+    import os
+    import torch
+    from accelerate import init_empty_weights
+    from safetensors.torch import load_file
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    config, n_layers, needs_head = _check_layer_files(
+        model_dir, layers_dir, model_name
+    )
+
+    print(f"[Local] Assembling {model_name} from {n_layers} layer files...")
+
+    with init_empty_weights():
+        model = AutoModelForCausalLM.from_config(config)
+
+    state = {}
+    try:
+        state.update(load_file(
+            os.path.join(layers_dir, "embed_tokens.safetensors"), device="cpu"))
+        for i in range(n_layers):
+            state.update(load_file(
+                os.path.join(layers_dir, f"layer_{i}.safetensors"), device="cpu"))
+        state.update(load_file(
+            os.path.join(layers_dir, "norm.safetensors"), device="cpu"))
+
+        head_path = os.path.join(layers_dir, "head.safetensors")
+        if os.path.exists(head_path):
+            state.update(load_file(head_path, device="cpu"))
+    except Exception as e:
+        raise MissingLayerFiles(
+            f"Could not read layer files for '{model_name}': {e}\n"
+            f"  A file may be corrupt or partially written. Re-create with:\n"
+            f"    python create_layer_files.py {model_name}"
+        ) from e
+
+    # Tied embeddings: lm_head reuses the embedding matrix.
+    if not needs_head and "lm_head.weight" not in state:
+        embed = state.get("model.embed_tokens.weight")
+        if embed is not None:
+            state["lm_head.weight"] = embed
+
+    state = {k: v.to(dtype) for k, v in state.items()}
+
+    missing_keys, unexpected = model.load_state_dict(
+        state, strict=False, assign=True
+    )
+
+    # Any parameter still on the meta device never received a weight.
+    still_meta = [n for n, p in model.named_parameters() if p.is_meta]
+    if still_meta:
+        raise MissingLayerFiles(
+            f"'{model_name}' assembled with {len(still_meta)} uninitialised "
+            f"weights, e.g. {still_meta[:3]}.\n"
+            f"  The layer files are incomplete or from a different model.\n"
+            f"  Re-create with: python create_layer_files.py {model_name}"
+        )
+
+    model = model.to(device)
+    model.eval()
+
+    tokenizer = AutoTokenizer.from_pretrained(model_dir)
+    print(f"[Local] {model_name} assembled on {device}")
+    return model, tokenizer
+
+
+# ═══════════════════════════════════════════════════════════════
 # LOCAL SINGLE-NODE PATH
 # ═══════════════════════════════════════════════════════════════
  
@@ -321,18 +478,31 @@ def _run_local(query, local, session, on_token=None):
 
     model_name = query.model_name
     model_dir = os.path.join(local.model_path, model_name)
+    layers_dir = os.path.join(local.layers_path, model_name)
 
     # Load model on first call for this model, reuse on subsequent calls
     if model_name not in _local_models:
-        from transformers import AutoModelForCausalLM, AutoTokenizer
-        print(f"[Local] Loading full model from {model_dir}...")
-        tokenizer = AutoTokenizer.from_pretrained(model_dir)
-        model = AutoModelForCausalLM.from_pretrained(
-            model_dir, dtype=query.dtype
-        ).to(local.device)
-        model.eval()
+        try:
+            model, tokenizer = _assemble_local_model(
+                model_dir, layers_dir, model_name, query.dtype, local.device
+            )
+        except MissingLayerFiles as e:
+            # Fall back to the original weights if they happen to still be
+            # on disk; otherwise surface the layer-file problem, which is
+            # the one the user can actually fix.
+            full_weights = _has_full_weights(model_dir)
+            if not full_weights:
+                raise
+            print(f"[Local] Layer files unusable, falling back to full weights")
+            print(f"[Local]   ({str(e).splitlines()[0]})")
+            from transformers import AutoModelForCausalLM, AutoTokenizer
+            tokenizer = AutoTokenizer.from_pretrained(model_dir)
+            model = AutoModelForCausalLM.from_pretrained(
+                model_dir, dtype=query.dtype
+            ).to(local.device)
+            model.eval()
+
         _local_models[model_name] = {"model": model, "tokenizer": tokenizer}
-        print(f"[Local] {model_name} loaded on {local.device}")
 
     model = _local_models[model_name]["model"]
     tokenizer = _local_models[model_name]["tokenizer"]
