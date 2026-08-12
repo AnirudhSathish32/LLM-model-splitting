@@ -448,6 +448,12 @@ class InferencePeer:
         decoded = self.model.decode(request.generated_ids)
         print(f"[Token {tc}] ({sid}) id={token_id}, text so far: '{decoded}'", flush=True)
 
+        # Push incremental delta for streaming consumers (UI/API)
+        delta = decoded[len(request._last_decoded):]
+        request._last_decoded = decoded
+        if delta:
+            request.token_queue.put(delta)
+
         request.full_sequence_ids = torch.cat(
             [request.full_sequence_ids, token.unsqueeze(0).to(request.full_sequence_ids.device)],
             dim=-1,

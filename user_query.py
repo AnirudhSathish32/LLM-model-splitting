@@ -6,21 +6,25 @@ import time
 import os
 
 from hardware import build_pipeline
-from config import SharedConfig, LocalConfig, MSG_CONFIG, MSG_READY, MSG_START, MSG_RESPONSE, MSG_QUERY, MSG_QUERY_FAIL
+from config import (SharedConfig, LocalConfig, MSG_CONFIG, MSG_READY, MSG_START,
+                    MSG_RESPONSE, MSG_QUERY, MSG_QUERY_FAIL, MSG_TOKEN_STREAM)
 from networking.protocol import send_message, read_message
 from networking.serialization import to_bytes, serialize_config_query
 
 import zlib
 
-def _model_port(model_name, base=55000, span=2000):
+def _model_port(model_name, base=60000, span=2000):
     """
     Deterministic port per model so concurrent multi-model pipelines
     don't collide. Uses crc32 (not Python hash(), which is salted
     per-process). Both orchestrators compute the same port for the
     same model independently — no coordination needed.
+
+    Maps into [base, base+span) = [60000, 62000), well within the
+    valid TCP range (0-65535) and clear of common service ports.
     """
     offset = zlib.crc32(model_name.encode()) % span
-    return base + offset * 2
+    return base + offset
 
 
 @dataclass
@@ -34,6 +38,24 @@ class UserQuery:
 
     # No property — dtype is a plain dataclass field.
     # Callers pass torch.float16 / torch.bfloat16 / torch.float32 directly.
+
+
+def _read_until_response(conn, on_token=None):
+    """
+    Read from the master's control connection, forwarding MSG_TOKEN_STREAM
+    deltas to on_token, until a terminal message arrives.
+    Returns (msg_type, payload) for the terminal message.
+    """
+    while True:
+        msg_type, payload = read_message(conn)
+        if msg_type == MSG_TOKEN_STREAM:
+            if on_token:
+                try:
+                    on_token(payload.decode("utf-8"))
+                except Exception:
+                    pass    # a broken consumer must not kill the query
+            continue
+        return msg_type, payload
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -107,11 +129,40 @@ def _free_local_model(model_name):
         del entry["model"]
         del entry["tokenizer"]
 
+
+def get_pipeline_info(model_name):
+    """
+    Report the currently cached pipeline for a model, for UI display.
+    Returns None if no pipeline is cached yet (cold start pending).
+    """
+    cached = _cached_pipelines.get(model_name)
+    if cached is None:
+        return None
+    if cached.get("local_only"):
+        return {"mode": "local", "stages": []}
+    shared = cached.get("shared")
+    if shared is None:
+        return None
+    return {
+        "mode": "distributed",
+        "port": shared.port,
+        "stages": [
+            {
+                "ip": e["ip"],
+                "role": e["role"],
+                "layer_start": e["layers"][0],
+                "layer_end": e["layers"][1],
+                "count": e["layers"][1] - e["layers"][0] + 1,
+            }
+            for e in shared.pipeline
+        ],
+    }
+
 # ═══════════════════════════════════════════════════════════════
 # ORCHESTRATION — the initiator's flow from query to inference
 # ═══════════════════════════════════════════════════════════════
 
-def send_query(query, local: LocalConfig, session_manager, daemon_port=65433):
+def send_query(query, local: LocalConfig, session_manager, daemon_port=65433, on_token=None):
     global _cached_pipelines, _known_peers, _last_peer_check
     """
     Single entry point. Looks up cached pipeline for this model.
@@ -140,9 +191,9 @@ def send_query(query, local: LocalConfig, session_manager, daemon_port=65433):
         try:
             if cached.get("local_only"):
                 print(f"[Orchestrator] Using cached local path for {model_name}")
-                response = _run_local(query, local, session)
+                response = _run_local(query, local, session, on_token=on_token)
             else:
-                response = _try_warm_query(query, cached, daemon_port)
+                response = _try_warm_query(query, cached, daemon_port, on_token=on_token)
 
             session.add_assistant_message(response, model_name)
             session_manager.save_session(session)
@@ -184,7 +235,7 @@ def send_query(query, local: LocalConfig, session_manager, daemon_port=65433):
     # ── Single node: bypass networking entirely ──────────
     if len(pipeline) == 1:
         print(f"[Orchestrator] Single node — running locally, no networking")
-        response = _run_local(query, local, session)
+        response = _run_local(query, local, session, on_token=on_token)
  
         _cached_pipelines[model_name] = {"local_only": True}
  
@@ -218,7 +269,7 @@ def send_query(query, local: LocalConfig, session_manager, daemon_port=65433):
 
             print("[Orchestrator] Waiting for response...")
             master_conn.settimeout(300)
-            msg_type, payload = read_message(master_conn)
+            msg_type, payload = _read_until_response(master_conn, on_token)
             master_conn.close()
 
             if msg_type == MSG_RESPONSE:
@@ -260,7 +311,7 @@ def send_query(query, local: LocalConfig, session_manager, daemon_port=65433):
 # LOCAL SINGLE-NODE PATH
 # ═══════════════════════════════════════════════════════════════
  
-def _run_local(query, local, session):
+def _run_local(query, local, session, on_token=None):
     """
     Run inference on a single machine — no pipeline splitting, no networking.
     Model is cached per model_name so switching models doesn't reload.
@@ -295,16 +346,40 @@ def _run_local(query, local, session):
 
     # Generate
     print(f"[Local] Generating {query.tokens_to_generate} tokens (input: {input_len} tokens)...")
-    with torch.no_grad():
-        outputs = model.generate(
+
+    if on_token:
+        # Stream deltas as they are produced
+        from transformers import TextIteratorStreamer
+        streamer = TextIteratorStreamer(
+            tokenizer, skip_prompt=True, skip_special_tokens=True
+        )
+        gen_kwargs = dict(
             **inputs,
             max_new_tokens=query.tokens_to_generate,
             do_sample=False,
+            streamer=streamer,
         )
+        gen_thread = threading.Thread(target=model.generate, kwargs=gen_kwargs)
+        gen_thread.start()
 
-    # Decode only the new tokens
-    new_tokens = outputs[0][input_len:]
-    response = tokenizer.decode(new_tokens, skip_special_tokens=True)
+        parts = []
+        for chunk in streamer:
+            parts.append(chunk)
+            try:
+                on_token(chunk)
+            except Exception:
+                pass
+        gen_thread.join()
+        response = "".join(parts)
+    else:
+        with torch.no_grad():
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=query.tokens_to_generate,
+                do_sample=False,
+            )
+        new_tokens = outputs[0][input_len:]
+        response = tokenizer.decode(new_tokens, skip_special_tokens=True)
  
     return response
 
@@ -312,7 +387,7 @@ def _run_local(query, local, session):
 # WARM PATH — MSG_QUERY to existing peers
 # ═══════════════════════════════════════════════════════════════
  
-def _try_warm_query(query, cached, daemon_port):
+def _try_warm_query(query, cached, daemon_port, on_token=None):
     """
     Send MSG_QUERY to all peers in the cached pipeline.
     Each peer responds MSG_READY (peer still loaded) or MSG_QUERY_FAIL.
@@ -376,7 +451,7 @@ def _try_warm_query(query, cached, daemon_port):
     master_conn.settimeout(300)
  
     print(f"[Orchestrator] Warm pipeline running — waiting for response...")
-    msg_type, resp_payload = read_message(master_conn)
+    msg_type, resp_payload = _read_until_response(master_conn, on_token)
     master_conn.close()
  
     if msg_type != MSG_RESPONSE:

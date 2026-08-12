@@ -14,6 +14,7 @@ of one user blocking everyone until their full response is done.
 
 import threading
 import time
+import queue
 from collections import deque
 
 
@@ -45,6 +46,8 @@ class InFlightRequest:
         self.status = "pending"         # pending → running → done
         self.result = None              # response string, set when done
         self.done_event = threading.Event()
+        self.token_queue = queue.Queue() # incremental text deltas for streaming
+        self._last_decoded = ""          # for computing deltas
         self.created_at = time.time()
         self.last_stepped_at = 0.0      # 0.0 = never stepped → picked first (round-robin)
 
@@ -123,6 +126,7 @@ class Scheduler:
                     # generation finished for this request
                     request.status = "done"
                     request.result = self.peer.model.decode(request.generated_ids)
+                    request.token_queue.put(None)   # sentinel: no more deltas
                     request.done_event.set()
 
                     with self._lock:

@@ -3,6 +3,7 @@ import os, sys, json, socket, threading, time, torch, io
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config import (
+    MSG_TOKEN_STREAM,
     SharedConfig, LocalConfig,
     MSG_PING, MSG_PONG,
     MSG_BENCHMARK_REQ, MSG_BENCHMARK_RESP, MSG_BENCHMARK_MISS,
@@ -242,12 +243,7 @@ class Daemon:
 
             print(f"[Scheduler] Submitting first request (session={query.session_id})")
             scheduler.submit(request)
-            request.done_event.wait()
-
-            response = request.result
-            print(f"[Daemon] First query complete — sending MSG_RESPONSE ({len(response)} chars)")
-            send_message(conn, MSG_RESPONSE, response.encode("utf-8"))
-            print(f"[Daemon] MSG_RESPONSE sent")
+            self._stream_and_respond(conn, request, label="First query")
         else:
             # Worker/tail: start long-running generation loop in a thread
             gen_thread = threading.Thread(
@@ -360,12 +356,7 @@ class Daemon:
                         send_message(conn, MSG_QUERY_FAIL)
                         return
 
-            request.done_event.wait()
-
-            response = request.result
-            print(f"[Daemon] Query complete — sending MSG_RESPONSE ({len(response)} chars)")
-            send_message(conn, MSG_RESPONSE, response.encode("utf-8"))
-            print(f"[Daemon] MSG_RESPONSE sent")
+            self._stream_and_respond(conn, request, label="Query")
         else:
             # Worker/tail already in their long-running loops — nothing to do
             print(f"[Daemon] Warm query ack — {peer.role} loop already running")
@@ -398,6 +389,43 @@ class Daemon:
                   f"({overhead*100:.0f}% of {total_gb:.1f}GB)")
             self._evict_lru_peer()
             total, free = self._get_memory_status()
+
+    def _stream_and_respond(self, conn, request, label="Query"):
+        """
+        Forward text deltas to the orchestrator as they are generated,
+        then send the final MSG_RESPONSE. If the orchestrator hangs up
+        mid-stream, generation still completes (the cache stays valid).
+        """
+        import queue as _queue
+
+        streamed = 0
+        while True:
+            try:
+                delta = request.token_queue.get(timeout=0.5)
+            except _queue.Empty:
+                if request.done_event.is_set():
+                    break
+                continue
+
+            if delta is None:      # sentinel from Scheduler
+                break
+
+            try:
+                send_message(conn, MSG_TOKEN_STREAM, delta.encode("utf-8"))
+                streamed += 1
+            except Exception as e:
+                print(f"[Daemon] Stream broken ({e}) — finishing generation anyway")
+                break
+
+        request.done_event.wait()
+        response = request.result or ""
+        print(f"[Daemon] {label} complete — streamed {streamed} deltas, "
+              f"sending MSG_RESPONSE ({len(response)} chars)")
+        try:
+            send_message(conn, MSG_RESPONSE, response.encode("utf-8"))
+            print(f"[Daemon] MSG_RESPONSE sent")
+        except Exception as e:
+            print(f"[Daemon] Could not send final response: {e}")
 
     def _evict_lru_peer(self):
         """Evict the least recently used model to free memory.
