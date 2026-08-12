@@ -57,7 +57,7 @@ def main():
     local = LocalConfig.load()
     print(f"[Launch] This machine: {local.tailscale_ip} ({local.device})")
 
-    start_daemon(args.daemon_port)
+    d = start_daemon(args.daemon_port)
 
     if args.daemon_only:
         print("[Launch] Daemon-only mode — Ctrl+C to stop")
@@ -65,7 +65,9 @@ def main():
             while True:
                 time.sleep(1)
         except KeyboardInterrupt:
-            print("\n[Launch] Stopped")
+            print("\n[Launch] Stopping")
+        finally:
+            d.shutdown()
         return
 
     import uvicorn
@@ -76,7 +78,12 @@ def main():
         threading.Timer(1.5, lambda: webbrowser.open(url)).start()
 
     print(f"[Launch] UI at {url}")
-    uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning")
+    try:
+        uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning")
+    finally:
+        # Tell the other machines before this process goes away, so they
+        # release their peers instead of hitting a dropped socket.
+        d.shutdown()
 
 
 if __name__ == "__main__":

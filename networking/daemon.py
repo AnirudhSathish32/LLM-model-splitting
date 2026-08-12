@@ -61,9 +61,106 @@ class Daemon:
                     continue
         except KeyboardInterrupt:
             print("\n[Daemon] KeyboardInterrupt detected. Shutting down...")
-            self.running = False
         finally:
+            self.shutdown()
             server.close()
+
+    def _run_generation_guarded(self, peer, query, model_name, role):
+        """
+        Run a worker/tail generation loop and release the peer when it ends.
+
+        Without this wrapper, an upstream node exiting raises ConnectionError
+        deep inside receive_hidden, the thread dies with a traceback, and the
+        peer is left loaded with dead sockets. Later queries would then match
+        the cached pipeline and route to a loop that no longer exists.
+        """
+        try:
+            peer.run_generation(query=query)
+            print(f"[Daemon] {role} loop for '{model_name}' ended normally")
+        except ConnectionError as e:
+            print(f"[Daemon] Lost connection to the pipeline ({e})")
+        except Exception as e:
+            print(f"[Daemon] {role} loop for '{model_name}' failed: "
+                  f"{type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            self._release_peer(model_name)
+
+    def _release_peer(self, model_name):
+        """
+        Drop a peer whose pipeline is no longer usable, so the next query
+        rebuilds instead of reusing dead sockets.
+        """
+        with self.peer_lock:
+            peer = self.peers.pop(model_name, None)
+            scheduler = self.schedulers.pop(model_name, None)
+            self._peer_last_used.pop(model_name, None)
+            self._gen_threads.pop(model_name, None)
+
+        if peer is None and scheduler is None:
+            return
+
+        if scheduler is not None:
+            scheduler.stop()
+        if peer is not None:
+            try:
+                peer.cleanup()
+            except Exception:
+                pass
+
+        print(f"[Daemon] Released '{model_name}' — the next query will rebuild it")
+
+    def _peer_is_healthy(self, model_name):
+        """
+        Whether a loaded peer can still serve a query. A peer with a loaded
+        model but a dead generation loop or dead scheduler is worse than no
+        peer at all: it accepts the query and then never responds.
+        """
+        with self.peer_lock:
+            peer = self.peers.get(model_name)
+            scheduler = self.schedulers.get(model_name)
+            gen_thread = self._gen_threads.get(model_name)
+
+        if peer is None or peer.model is None:
+            return False
+
+        if peer.is_master:
+            if scheduler is None or not scheduler.running:
+                print(f"[Daemon] '{model_name}' has no live scheduler")
+                return False
+        else:
+            if gen_thread is None or not gen_thread.is_alive():
+                print(f"[Daemon] '{model_name}' generation loop is no longer running")
+                return False
+
+        return True
+
+    def shutdown(self):
+        """
+        Stop accepting work and tell connected peers before the process
+        goes away, so they release their peers cleanly rather than
+        discovering the loss as an abrupt socket close.
+        """
+        if not self.running and not self.peers:
+            return
+        print("[Daemon] Shutting down — notifying peers")
+        self.running = False
+
+        for model_name in list(self.peers.keys()):
+            peer = self.peers.get(model_name)
+            if peer is None:
+                continue
+            try:
+                peer.send_stop()
+                print(f"[Daemon] Sent stop for '{model_name}'")
+            except Exception:
+                pass
+
+        for model_name in list(self.peers.keys()):
+            self._release_peer(model_name)
+
+        print("[Daemon] Shutdown complete")
 
     def _handle_connection(self, conn, addr):
         """Handle one incoming request. Runs in its own thread."""
@@ -171,9 +268,14 @@ class Daemon:
             existing_peer = self.peers.get(model_name)
 
         if existing_peer is not None and existing_peer.shared.pipeline == shared.pipeline:
-            print(f"[Daemon] Same pipeline already active for {model_name} — routing as warm query")
-            self._run_query_on_existing_peer(conn, query, model_name)
-            return
+            if self._peer_is_healthy(model_name):
+                print(f"[Daemon] Same pipeline already active for {model_name} "
+                      f"— routing as warm query")
+                self._run_query_on_existing_peer(conn, query, model_name)
+                return
+            print(f"[Daemon] Pipeline for {model_name} matches but is no longer "
+                  f"usable — rebuilding")
+            self._release_peer(model_name)
 
         # ── Check 2: another thread already creating this model? Wait for it ──
         with self.peer_lock:
@@ -268,10 +370,12 @@ class Daemon:
             scheduler.submit(request)
             self._stream_and_respond(conn, request, label="First query")
         else:
-            # Worker/tail: start long-running generation loop in a thread
+            # Worker/tail: start long-running generation loop in a thread.
+            # Wrapped so an upstream node going away releases this peer
+            # instead of silently killing the thread.
             gen_thread = threading.Thread(
-                target=peer.run_generation,
-                kwargs={"query": query},
+                target=self._run_generation_guarded,
+                args=(peer, query, model_name, my_entry["role"]),
                 daemon=True,
             )
             gen_thread.start()
@@ -295,6 +399,13 @@ class Daemon:
 
         if peer is None or peer.model is None:
             print(f"[Daemon] No peer for model '{model_name}' — rejecting MSG_QUERY")
+            send_message(conn, MSG_QUERY_FAIL)
+            return
+
+        if not self._peer_is_healthy(model_name):
+            print(f"[Daemon] Peer for '{model_name}' is stale — rejecting so the "
+                  f"orchestrator falls back to a cold rebuild")
+            self._release_peer(model_name)
             send_message(conn, MSG_QUERY_FAIL)
             return
 
@@ -441,6 +552,15 @@ class Daemon:
                 break
 
         request.done_event.wait()
+
+        if getattr(request, "error", None):
+            print(f"[Daemon] {label} failed: {request.error}")
+            try:
+                send_message(conn, MSG_QUERY_FAIL)
+            except Exception:
+                pass
+            return
+
         response = request.result or ""
         print(f"[Daemon] {label} complete — streamed {streamed} deltas, "
               f"sending MSG_RESPONSE ({len(response)} chars)")
