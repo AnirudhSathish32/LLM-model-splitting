@@ -30,7 +30,7 @@ body{
 button,input,textarea,select{font:inherit;color:inherit}
 :focus-visible{outline:2px solid var(--signal);outline-offset:2px}
 
-.app{display:grid;grid-template-columns:1fr 280px;height:100vh}
+.app{display:grid;grid-template-columns:280px 1fr;height:100vh}
 
 /* ── Center column ─────────────────────────────── */
 .main{display:flex;flex-direction:column;min-width:0}
@@ -124,7 +124,7 @@ textarea::placeholder{color:var(--muted)}
 
 /* ── Right rail ────────────────────────────────── */
 .rail{
-  border-left:1px solid var(--edge);background:var(--panel);
+  border-right:1px solid var(--edge);background:var(--panel);
   display:flex;flex-direction:column;min-width:0;
 }
 .rail-head{
@@ -154,12 +154,76 @@ textarea::placeholder{color:var(--muted)}
   font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:2px;
   display:flex;justify-content:space-between;gap:8px;
 }
-.del{
+.sess .acts{display:flex;gap:2px;opacity:0;transition:opacity .12s}
+.sess:hover .acts,.sess.active .acts{opacity:1}
+.act{
   background:none;border:0;color:var(--muted);cursor:pointer;
-  font-size:14px;line-height:1;padding:0 2px;
+  font-size:12px;line-height:1;padding:0 3px;
 }
-.del:hover{color:var(--danger)}
+.act:hover{color:var(--signal)}
+.act.del:hover{color:var(--danger)}
+.rename{
+  width:100%;background:var(--ink);border:1px solid var(--signal);
+  border-radius:2px;padding:2px 6px;font-size:13.5px;
+}
 .rail-empty{color:var(--muted);font-size:13px;padding:16px;text-align:center}
+.rail-foot{border-top:1px solid var(--edge);padding:10px}
+.settingsbtn{
+  width:100%;background:none;border:0;color:var(--muted);cursor:pointer;
+  text-align:left;padding:6px 8px;border-radius:3px;font-size:13px;
+}
+.settingsbtn:hover{background:var(--raise);color:var(--text)}
+
+/* Settings dialog */
+.scrim{
+  position:fixed;inset:0;background:rgba(6,10,14,.72);
+  display:none;align-items:center;justify-content:center;padding:20px;z-index:50;
+}
+.scrim.open{display:flex}
+.dialog{
+  background:var(--panel);border:1px solid var(--edge);border-radius:5px;
+  width:100%;max-width:520px;max-height:88vh;overflow-y:auto;
+}
+.dialog-head{
+  padding:18px 22px 14px;border-bottom:1px solid var(--edge);
+  display:flex;justify-content:space-between;align-items:baseline;gap:12px;
+}
+.dialog-head h2{font-size:16px;font-weight:600}
+.dialog-head p{font-size:12.5px;color:var(--muted);margin-top:3px}
+.dialog-body{padding:18px 22px;display:flex;flex-direction:column;gap:16px}
+.field label{
+  display:block;font-family:var(--mono);font-size:10px;letter-spacing:.12em;
+  text-transform:uppercase;color:var(--muted);margin-bottom:5px;
+}
+.field input[type=text],.field input[type=number],.field select{
+  width:100%;background:var(--ink);border:1px solid var(--edge);
+  border-radius:3px;padding:7px 10px;font-family:var(--mono);font-size:13px;
+}
+.field input:focus,.field select:focus{border-color:#38536a;outline:none}
+.field .hint{font-size:12px;color:var(--muted);margin-top:5px;line-height:1.45}
+.field.check{display:flex;align-items:center;gap:9px}
+.field.check label{margin:0;text-transform:none;letter-spacing:0;
+  font-family:var(--sans);font-size:13.5px;color:var(--text)}
+.restart-tag{
+  font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;color:var(--amber);
+  border:1px solid #4a3a25;border-radius:2px;padding:1px 5px;margin-left:7px;
+}
+.dialog-foot{
+  padding:14px 22px 18px;border-top:1px solid var(--edge);
+  display:flex;justify-content:space-between;align-items:center;gap:12px;
+}
+.notice{font-size:12.5px;color:var(--muted);flex:1}
+.notice.warn{color:var(--amber)}
+.notice.bad{color:var(--danger)}
+.btn-row{display:flex;gap:8px;flex-shrink:0}
+.btn{
+  border:1px solid var(--edge);background:none;color:var(--text);
+  border-radius:3px;padding:7px 15px;font-size:13.5px;cursor:pointer;
+}
+.btn:hover{border-color:#38536a}
+.btn.primary{background:var(--signal);border-color:var(--signal);color:#08131A;font-weight:600}
+.btn.primary:hover:not(:disabled){filter:brightness(1.1)}
+.btn:disabled{opacity:.5;cursor:not-allowed}
 
 @media (max-width:860px){
   .app{grid-template-columns:1fr}
@@ -172,6 +236,17 @@ textarea::placeholder{color:var(--muted)}
 </head>
 <body>
 <div class="app">
+  <aside class="rail">
+    <div class="rail-head">
+      <h2>Conversations</h2>
+      <button class="newbtn" id="new">New</button>
+    </div>
+    <div class="sessions" id="sessions"></div>
+    <div class="rail-foot">
+      <button class="settingsbtn" id="openSettings">Settings</button>
+    </div>
+  </aside>
+
   <div class="main">
 
     <!-- Signature element: live pipeline topology -->
@@ -199,13 +274,69 @@ textarea::placeholder{color:var(--muted)}
     </div>
   </div>
 
-  <aside class="rail">
-    <div class="rail-head">
-      <h2>Conversations</h2>
-      <button class="newbtn" id="new">New</button>
+</div>
+
+<div class="scrim" id="scrim">
+  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="setTitle">
+    <div class="dialog-head">
+      <div>
+        <h2 id="setTitle">Settings</h2>
+        <p>Applies to this machine only. Each machine keeps its own.</p>
+      </div>
     </div>
-    <div class="sessions" id="sessions"></div>
-  </aside>
+
+    <div class="dialog-body">
+      <div class="field">
+        <label for="setDevice">Compute device<span class="restart-tag">restart</span></label>
+        <select id="setDevice">
+          <option value="cuda">cuda — NVIDIA GPU</option>
+          <option value="cpu">cpu</option>
+          <option value="mps">mps — Apple Silicon</option>
+        </select>
+        <div class="hint">Where this machine runs its share of the model.</div>
+      </div>
+
+      <div class="field">
+        <label for="setIp">Tailscale address<span class="restart-tag">restart</span></label>
+        <input type="text" id="setIp" placeholder="100.x.x.x">
+        <div class="hint">How other machines reach this one. Find it with
+          <code>tailscale ip -4</code>.</div>
+      </div>
+
+      <div class="field">
+        <label for="setLayers">Layer files</label>
+        <input type="text" id="setLayers" placeholder="./layers">
+        <div class="hint">Where per-layer model weights live.</div>
+      </div>
+
+      <div class="field">
+        <label for="setModels">Model files</label>
+        <input type="text" id="setModels" placeholder="./models">
+        <div class="hint">Config and tokenizer files for each model.</div>
+      </div>
+
+      <div class="field">
+        <label for="setOverhead">Memory held in reserve</label>
+        <input type="number" id="setOverhead" min="0" max="0.9" step="0.05">
+        <div class="hint">Kept free for conversation cache and the OS.
+          0.2 reserves 20%. Raise it if this machine runs out of memory;
+          lower it to fit more layers.</div>
+      </div>
+
+      <div class="field check">
+        <input type="checkbox" id="setDebug">
+        <label for="setDebug">Verbose logging</label>
+      </div>
+    </div>
+
+    <div class="dialog-foot">
+      <div class="notice" id="setNotice"></div>
+      <div class="btn-row">
+        <button class="btn" id="setCancel">Cancel</button>
+        <button class="btn primary" id="setSave">Save</button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -226,20 +357,53 @@ async function loadSessions(){
   for(const s of sessions){
     const el = document.createElement('div');
     el.className = 'sess' + (s.id === currentSession ? ' active' : '');
-    el.innerHTML = `<div class="title">${esc(s.title)}</div>
-      <div class="sub"><span>${esc(s.id)}</span>
-      <span>${s.turns} turn${s.turns===1?'':'s'} <button class="del" title="Delete">×</button></span></div>`;
-    el.onclick = e => {
-      if(e.target.classList.contains('del')){
-        e.stopPropagation();
-        fetch('/api/sessions/'+encodeURIComponent(s.id), {method:'DELETE'})
-          .then(() => { if(currentSession===s.id){currentSession=null; render([]);} loadSessions(); });
-        return;
-      }
-      openSession(s.id);
+    el.innerHTML = `<div class="title"></div>
+      <div class="sub"><span>${s.turns} turn${s.turns===1?'':'s'}</span>
+      <span class="acts">
+        <button class="act ren" title="Rename">Rename</button>
+        <button class="act del" title="Delete">×</button>
+      </span></div>`;
+    el.querySelector('.title').textContent = s.title;
+
+    el.querySelector('.ren').onclick = e => { e.stopPropagation(); startRename(el, s); };
+    el.querySelector('.del').onclick = e => {
+      e.stopPropagation();
+      fetch('/api/sessions/'+encodeURIComponent(s.id), {method:'DELETE'})
+        .then(() => { if(currentSession===s.id){currentSession=null; render([]);} loadSessions(); });
     };
+    el.onclick = () => openSession(s.id);
     box.appendChild(el);
   }
+}
+
+function startRename(row, sess){
+  const titleEl = row.querySelector('.title');
+  const input = document.createElement('input');
+  input.className = 'rename';
+  input.value = sess.title;
+  titleEl.replaceWith(input);
+  input.focus();
+  input.select();
+
+  let settled = false;
+  const commit = async save => {
+    if(settled) return;
+    settled = true;
+    if(save && input.value.trim() !== sess.title){
+      await fetch('/api/sessions/'+encodeURIComponent(sess.id), {
+        method:'PATCH', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({title: input.value})
+      });
+    }
+    loadSessions();
+  };
+
+  input.onblur = () => commit(true);
+  input.onkeydown = e => {
+    if(e.key === 'Enter'){ e.preventDefault(); commit(true); }
+    if(e.key === 'Escape'){ e.preventDefault(); commit(false); }
+  };
+  input.onclick = e => e.stopPropagation();
 }
 
 async function openSession(id){
@@ -390,6 +554,79 @@ $('input').addEventListener('input', e => {
   e.target.style.height = Math.min(e.target.scrollHeight, 180) + 'px';
 });
 $('model').onchange = refreshPipeline;
+
+
+// ── Settings ───────────────────────────────────
+async function openSettings(){
+  const {settings} = await (await fetch('/api/settings')).json();
+  $('setDevice').value   = settings.device;
+  $('setIp').value       = settings.tailscale_ip;
+  $('setLayers').value   = settings.layers_path;
+  $('setModels').value   = settings.model_path;
+  $('setOverhead').value = settings.overhead;
+  $('setDebug').checked  = settings.debug;
+  setNotice('');
+  $('scrim').classList.add('open');
+  $('setDevice').focus();
+}
+
+function closeSettings(){ $('scrim').classList.remove('open'); }
+
+function setNotice(text, kind){
+  const el = $('setNotice');
+  el.textContent = text;
+  el.className = 'notice' + (kind ? ' ' + kind : '');
+}
+
+async function saveSettings(){
+  const body = {
+    device:       $('setDevice').value,
+    tailscale_ip: $('setIp').value.trim(),
+    layers_path:  $('setLayers').value.trim() || './layers',
+    model_path:   $('setModels').value.trim() || './models',
+    overhead:     parseFloat($('setOverhead').value),
+    debug:        $('setDebug').checked,
+  };
+
+  if(Number.isNaN(body.overhead) || body.overhead < 0 || body.overhead >= 1){
+    setNotice('Memory reserve must be between 0 and 1.', 'bad');
+    return;
+  }
+
+  $('setSave').disabled = true;
+  setNotice('Saving…');
+  try{
+    const res = await fetch('/api/settings', {
+      method:'PUT', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(body)
+    });
+    const data = await res.json();
+
+    if(!res.ok){
+      setNotice(data.error || 'Could not save.', 'bad');
+      return;
+    }
+    if(data.needs_restart.length){
+      setNotice('Saved. Restart this machine\'s app to apply: '
+                + data.needs_restart.join(', ') + '.', 'warn');
+      return;
+    }
+    setNotice('Saved.');
+    setTimeout(closeSettings, 700);
+  }catch(e){
+    setNotice('Could not reach the server.', 'bad');
+  }finally{
+    $('setSave').disabled = false;
+  }
+}
+
+$('openSettings').onclick = openSettings;
+$('setCancel').onclick = closeSettings;
+$('setSave').onclick = saveSettings;
+$('scrim').onclick = e => { if(e.target === $('scrim')) closeSettings(); };
+document.addEventListener('keydown', e => {
+  if(e.key === 'Escape' && $('scrim').classList.contains('open')) closeSettings();
+});
 
 (async function init(){
   const {models} = await (await fetch('/api/models')).json();

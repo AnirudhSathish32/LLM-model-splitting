@@ -92,9 +92,13 @@ def list_sessions():
         first = next(
             (m["content"] for m in s.messages if m["role"] == "user"), None
         )
+        title = getattr(s, "title", None) or (
+            first[:60] if first else "New conversation"
+        )
         out.append({
             "id": sid,
-            "title": (first[:60] if first else "New conversation"),
+            "title": title,
+            "custom_title": bool(getattr(s, "title", None)),
             "turns": sum(1 for m in s.messages if m["role"] == "user"),
             "last_active": getattr(s, "last_active", 0),
         })
@@ -122,10 +126,88 @@ def create_session(body: NewSession):
     return {"id": body.id}
 
 
+class RenameSession(BaseModel):
+    title: str
+
+
+@app.patch("/api/sessions/{session_id}")
+def rename_session(session_id: str, body: RenameSession):
+    title = session_manager.set_title(session_id, body.title)
+    return {"id": session_id, "title": title}
+
+
 @app.delete("/api/sessions/{session_id}")
 def delete_session(session_id: str):
     session_manager.delete_session(session_id)
     return {"deleted": session_id}
+
+
+
+# ── Settings ─────────────────────────────────────────────────
+
+# Fields the running process picks up on the next query vs. those
+# baked into loaded models and open sockets at startup.
+LIVE_FIELDS = {"overhead", "debug", "model_path", "layers_path"}
+RESTART_FIELDS = {"device", "tailscale_ip"}
+
+
+@app.get("/api/settings")
+def get_settings():
+    return {
+        "settings": {
+            "device": local.device,
+            "tailscale_ip": local.tailscale_ip,
+            "model_path": local.model_path,
+            "layers_path": local.layers_path,
+            "overhead": local.overhead,
+            "debug": local.debug,
+        },
+        "restart_fields": sorted(RESTART_FIELDS),
+        "config_path": LocalConfig.CONFIG_PATH,
+    }
+
+
+class Settings(BaseModel):
+    device: str
+    tailscale_ip: str
+    model_path: str
+    layers_path: str
+    overhead: float
+    debug: bool
+
+
+@app.put("/api/settings")
+def put_settings(body: Settings):
+    """
+    Write settings to disk and update the running orchestrator where
+    that is safe. Reports which changes need a restart to take effect.
+    """
+    if not 0.0 <= body.overhead < 1.0:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "Memory reserve must be between 0 and 1 "
+                              "(0.2 reserves 20%)."},
+        )
+
+    incoming = body.model_dump()
+    changed = [k for k, v in incoming.items() if getattr(local, k) != v]
+
+    # Mutate in place so anything holding this instance sees the update.
+    for k, v in incoming.items():
+        setattr(local, k, v)
+
+    try:
+        local.save()
+    except Exception as e:
+        return JSONResponse(status_code=500,
+                            content={"error": f"Could not write config: {e}"})
+
+    needs_restart = sorted(set(changed) & RESTART_FIELDS)
+    return {
+        "saved": True,
+        "changed": changed,
+        "needs_restart": needs_restart,
+    }
 
 
 # ── Chat (streaming) ─────────────────────────────────────────
