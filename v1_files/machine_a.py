@@ -18,7 +18,7 @@ from config import (
     HANDOFF_DIR
 )
 
-from networking import (
+from networking.networking import (
     setup_machine_a_conn,
     read_message,
     send_handoff,
@@ -29,12 +29,12 @@ from networking import (
     receive_response
 )
 
-from inferencing import (
+from inference_peer import (
     save_handoff_package,
     split_1
 )
 
-from hooks import (
+from v1_files.hooks import (
     make_layer_hook,
     positional_hook,
     layer_hooks,
@@ -42,7 +42,7 @@ from hooks import (
     handoff_package
 )
 
-from model_loading import (
+from v1_files.model_loading import (
     setup_model_a
 )
 

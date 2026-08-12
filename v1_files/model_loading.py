@@ -97,3 +97,32 @@ def setup_model_b(stopping_layer:int, model_path):
     print("Machine B ready \n")
 
     return model, tokenizer
+
+def setup_model_middle(layer_start, layer_end, model_path, device):
+    start = time.time()
+
+    config = AutoConfig.from_pretrained(model_path)
+
+    with init_empty_weights():
+        model = AutoModelForCausalLM.from_config(config)
+
+    model_name = os.path.basename(model_path)
+    layers_dir = f"./layers/{model_name}"
+    state = {}
+
+    for i in range(layer_start, layer_end + 1):
+        state.update(load_file(f"{layers_dir}/layer_{i}.safetensors", device=device))
+        print(f"Loaded layer {i}")
+
+    model.load_state_dict(state, strict=False, assign=True)
+
+    kept_layers = model.model.layers[layer_start:layer_end + 1]
+    model.model.layers = nn.ModuleList(kept_layers)
+    for i, layer in enumerate(model.model.layers):
+        layer.self_attn.layer_idx = i
+
+    model.eval()
+    print(f"Middle node ready — layers {layer_start}..{layer_end}, "
+          f"load time: {time.time() - start:.2f}s")
+
+    return model
