@@ -15,6 +15,7 @@ from config import (
 
 class InferencePeer:
     def __init__(self, shared: SharedConfig, local: LocalConfig):
+        self.last_activity = 0.0   # set by receive_hidden; used to tell idle from busy
         self.shared = shared
         self.local = local
 
@@ -239,6 +240,8 @@ class InferencePeer:
         sid_len = struct.unpack(">H", payload[:2])[0]
         session_id = payload[2:2 + sid_len].decode("utf-8")
         tensor_bytes = payload[2 + sid_len:]
+
+        self.last_activity = time.time()
 
         # Switch active cache to this session
         cache_key = (session_id, self.loaded_model_name)
