@@ -1,82 +1,296 @@
 # Distributed LLM Inference
 
-Run a large language model across multiple machines on your local network.
-Each machine holds a slice of the model's layers — a model that doesn't fit
-on any single device can run across all of them together. No cloud API, no
-per-token costs, no data leaving your network.
+**A distributed inference system that partitions a transformer across multiple
+heterogeneous machines, assigning layers dynamically based on each machine's
+measured compute speed and available memory.**
 
-Everything is built from scratch in PyTorch: the pipeline parallelism, the
-TCP wire protocol, the query scheduler, and the per-layer weight splitting.
-No external serving framework required.
+Machines communicate over a custom length-prefixed TCP protocol. A scheduler
+interleaves concurrent requests so multiple users share one pipeline. Every
+distributed forward pass is validated layer by layer against single-machine
+inference.
 
-## What it does
+Built from scratch in PyTorch — the pipeline parallelism, wire protocol,
+query scheduler, and per-layer weight splitting are all implemented here
+rather than delegated to a serving framework. A model that fits on none of
+the machines individually runs across all of them together, with no cloud API
+and no data leaving the local network.
 
-- **Splits a model across N machines** proportional to each machine's
-  speed and available memory. A fast GPU gets more layers; a slow CPU gets
-  fewer. The split is computed automatically from benchmarks — nothing to
-  configure by hand.
-- **Discovers machines automatically** over a Tailscale network. Start a
-  daemon on a machine and it joins the next pipeline that gets built.
-- **Reuses a live pipeline** across turns. The first query pays for model
-  loading and connection setup; every later query skips all of it.
-- **Interleaves concurrent queries.** A round-robin scheduler advances every
-  in-flight request one token at a time, so two people querying at once both
-  see their answers stream rather than one waiting for the other.
-- **Serves multiple models at once**, unloading the least recently used one
-  when memory gets tight.
-- **Remembers conversations** across restarts, stored as JSON on the machine
-  that started them.
+---
 
-Verified working on 2- and 3-machine pipelines with Llama 3.2 3B and Llama
-3.1 8B, across mixed CUDA and CPU-only hardware. Output matches
-single-machine inference to >0.999 cosine similarity, validated layer by
-layer.
+## Why this project
+
+Language models increasingly exceed the memory of the hardware people
+actually own. The usual answers are to buy a larger GPU, stand up a
+centralized inference server, or send requests to a cloud API.
+
+This explores a fourth option: **distribute the model itself.** Rather than
+requiring every machine to hold the complete model, each machine loads only
+the layers assigned to it — and the assignment is computed from measured
+hardware performance rather than configured by hand.
+
+```
+                    Distributed Pipeline
+
+ ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+ │    Machine A    │    │    Machine B    │    │    Machine C    │
+ │                 │    │                 │    │                 │
+ │   Layers 0–13   │───►│  Layers 14–21   │───►│  Layers 22–31   │
+ │       GPU       │    │       GPU       │    │       CPU       │
+ │                 │    │                 │    │    + LM head    │
+ └─────────────────┘    └─────────────────┘    └─────────────────┘
+          │                                             │
+          └───────────── generated token ◄──────────────┘
+
+                       Tailscale + TCP
+```
+
+## Results
+
+| Capability | Result |
+|---|---|
+| Correctness | >0.999 cosine similarity vs. single-machine inference, validated per layer |
+| RAM reduction | Up to 92% on a memory-constrained node |
+| VRAM reduction | Up to 67% |
+| Layer assignment | Computed automatically from per-machine benchmarks |
+| Pipelines verified | 2- and 3-machine, mixed GPU and CPU-only |
+| Models tested | Llama 3.2 3B (28 layers), Llama 3.1 8B (32 layers) |
+| Network protocol | Custom length-prefixed TCP, 21 message types |
+| Concurrency | Multiple interleaved generations on one pipeline |
+| Multi-model | Several models served at once, LRU eviction under memory pressure |
+| Conversation state | Persisted across process restarts |
+
+**Stack.** PyTorch · Transformers · safetensors · FastAPI · Tailscale
+
+---
 
 ## How it works
 
+### Inference flow
+
+Each machine holds a contiguous range of transformer layers. A prompt enters
+at the first machine and the hidden state travels the chain; the last machine
+runs the LM head and returns a single token to the first, which appends it
+and starts the next pass.
+
 ```
-   Machine A (GPU)          Machine B (GPU)          Machine C (CPU)
- ┌────────────────┐      ┌────────────────┐      ┌────────────────┐
- │  layers 0..13  │      │  layers 14..21 │      │  layers 22..31 │
- │    "master"    │─────→│    "worker"    │─────→│     "tail"     │
- │                │ state│                │ state│   + lm_head    │
- └────────────────┘      └────────────────┘      └────────────────┘
-        ↑ │                                              │
-   prompt│ └────────────── token (return) ──────────────┘
-                        Tailscale VPN
+Prompt
+  │
+  ▼
+Machine A ─── layers 0–13
+  │
+  │ hidden state
+  ▼
+Machine B ─── layers 14–21
+  │
+  │ hidden state
+  ▼
+Machine C ─── layers 22–31 + LM head
+  │
+  │ next token
+  ▼
+Machine A ─── repeat until complete
 ```
 
-A prompt enters at the **master**, which runs its layers and sends the
-resulting hidden state onward. Each **worker** in the middle receives a hidden
-state, runs its own layers, and passes it along. The last machine — the
-**tail** — runs the final layers plus the output head, producing one token,
-and sends it straight back to the master.
+Each machine keeps a KV cache for its own layers, so previously processed
+tokens are never recomputed. With two machines there is no middle stage and
+the first and last talk directly.
 
-That loop repeats once per token until the response is complete. With two
-machines there is no worker, and the master and tail talk directly.
+### Components
 
-Each machine only ever holds its own layers. Weights are pre-split into
-one file per layer, so a machine downloads and loads exactly what it needs.
+```
+                  ┌─────────────────────┐
+                  │    Query client     │
+                  │    Web UI / CLI     │
+                  └──────────┬──────────┘
+                             ▼
+                  ┌─────────────────────┐
+                  │   Query scheduler   │
+                  │   interleaves       │
+                  │   concurrent work   │
+                  └──────────┬──────────┘
+                             ▼
+                  ┌─────────────────────┐
+                  │  Pipeline builder   │
+                  │                     │
+                  │ • machine discovery │
+                  │ • benchmark lookup  │
+                  │ • layer allocation  │
+                  └──────────┬──────────┘
+                             │
+           ┌─────────────────┼─────────────────┐
+           ▼                 ▼                 ▼
+     ┌───────────┐     ┌───────────┐     ┌───────────┐
+     │ Machine A │────►│ Machine B │────►│ Machine C │
+     │  daemon   │     │  daemon   │     │  daemon   │
+     └───────────┘     └───────────┘     └───────────┘
+           │                 │                 │
+           └──────────── Tailscale ────────────┘
+```
 
-**Why pipeline parallelism.** Every extra machine adds one network hop to
-every token, so depth costs latency. What it buys is capacity: a model too
-large for any single machine becomes runnable. Use the fewest machines that
-fit the model.
+### Dynamic layer allocation
+
+Every machine benchmarks its own layer execution speed, available memory, and
+device type. The pipeline builder uses those measurements to balance
+execution time across stages rather than splitting layers evenly.
+
+```
+Fast GPU     →  more layers
+Medium GPU   →  fewer layers
+Slow CPU     →  fewest layers
+```
+
+The allocation is recomputed whenever the set of available machines changes,
+so the same model runs across heterogeneous hardware without assuming
+identical devices.
+
+### Cold path and warm path
+
+The first request pays the full setup cost. Every request after it reuses
+what is already running.
+
+```
+FIRST REQUEST                      SUBSEQUENT REQUESTS
+─────────────                      ───────────────────
+machine discovery                  query
+     ↓                                ↓
+hardware benchmarking              existing pipeline
+     ↓                                ↓
+layer allocation                   inference
+     ↓
+model loading
+     ↓
+TCP connection setup
+     ↓
+inference
+```
+
+### Concurrent query scheduling
+
+Generation is inherently sequential — token *N* depends on token *N−1* — and
+the pipeline is a shared resource. Rather than letting one generation hold it
+until finished, the scheduler advances every in-flight request one token per
+rotation:
+
+```
+Request A → token
+Request B → token
+Request A → token
+Request B → token
+        ...
+```
+
+Each request carries its own KV cache and session state. Hidden states are
+tagged with a session ID, so downstream machines switch caches per token
+without knowing that interleaving is happening.
+
+### Tensor transport
+
+The project implements its own TCP protocol rather than depending on an
+external distributed inference framework. Tensors are serialized to a
+language-independent binary layout:
+
+```
+┌─────────┬─────────┬─────────┬──────────────┐
+│  dtype  │  rank   │  shape  │ tensor bytes │
+└─────────┴─────────┴─────────┴──────────────┘
+```
+
+Messages are length-prefixed so a receiver knows exactly how many bytes
+belong to each one. The 21 message types cover query initialization, tensor
+and token transfer, pipeline control, machine discovery, lifecycle events,
+and failure signalling.
+
+This replaced a `torch.save`-based transport, removing roughly 1 KB of pickle
+framing per message and keeping the wire format independent of Python — which
+matters for adding non-Python devices later.
+
+### Model storage
+
+The original checkpoint is converted once into individual layer files:
+
+```
+layers/llama-3b/
+├── embed_tokens.safetensors
+├── layer_0.safetensors
+├── layer_1.safetensors
+├── ...
+├── layer_27.safetensors
+├── norm.safetensors
+└── head.safetensors
+```
+
+Each machine loads only the files for its assigned range, so the full
+multi-gigabyte checkpoint is never needed at inference time — including on
+the single-machine path, which reassembles the complete model from the same
+layer files.
+
+### Correctness validation
+
+Distributed inference has a failure mode that ordinary testing misses: **the
+pipeline can produce fluent, plausible text while its internal computation is
+already wrong.** No exception, no warning.
+
+Every layer's output is therefore compared against a single-machine reference
+implementation, measuring maximum absolute difference, mean absolute
+difference, and cosine similarity, with cosine similarity > 0.999 as the
+acceptance criterion at each boundary.
+
+This caught several bugs that all produced convincing output — KV-cache
+indexing and causal-mask errors among them. Specifics in
+[Design notes](#design-notes).
+
+### Performance characteristics
+
+```
+        ↓ memory required per machine
+        ↓ hardware requirements
+        ↑ network communication
+        ↑ pipeline complexity
+```
+
+Every additional machine adds a network hop to every generated token.
+Distributing a model buys **capacity and hardware flexibility, not lower
+latency.** For constrained hardware, though, it makes otherwise impossible
+models runnable — and concurrent throughput does improve, since the scheduler
+keeps stages busy across requests.
+
+---
+
+## Quick start
+
+On **each** machine, with [Tailscale](https://tailscale.com/) installed and
+logged in:
+
+```bash
+git clone <your-repo-url> && cd model_splitting
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+python install.py                                   # picks the right PyTorch build
+
+hf auth login                                       # paste a HuggingFace token
+hf download meta-llama/Llama-3.2-3B-Instruct --local-dir models/llama-3b
+python create_layer_files.py llama-3b               # split into per-layer files
+python benchmark.py llama-3b                        # measure this machine
+
+python launch.py                                    # opens the chat UI
+```
+
+Set `tailscale_ip` in `config/local_config.json` first — `tailscale ip -4`
+prints it. Detailed walkthrough below.
 
 ## Requirements
 
 - Python 3.10+
 - [Tailscale](https://tailscale.com/) installed and logged in on every machine
-- A [Hugging Face](https://huggingface.co/) account, to download model weights
-- One machine with a GPU is recommended but not required
+- A [Hugging Face](https://huggingface.co/) account, for gated models
+- A GPU on at least one machine is recommended, not required
 
-Machines can be a mix of Windows, Linux, and macOS, and a mix of GPU and
-CPU-only. You need room for the model twice while splitting it (about 12 GB for a
-3B model), but only the layer files afterwards.
+Windows, Linux, and macOS all work and can be mixed in one pipeline. You need
+room for the model twice while splitting it (about 12 GB for a 3B model), but
+only the layer files afterwards.
 
 ## Install
 
-Everything below runs on **every machine** that will take part.
+Run on **every machine** that will take part.
 
 ### 1. Get the code
 
@@ -107,10 +321,10 @@ Activate it:
 source .venv/bin/activate
 ```
 
-Your prompt should now be prefixed with `(.venv)`. **Activate it in every new
-terminal** before running anything below — including `launch.py` later on.
+Your prompt should now show `(.venv)`. **Activate it in every new terminal**
+before running anything below, including `launch.py`.
 
-If PowerShell refuses to run the activation script, allow local scripts once:
+If PowerShell blocks the activation script, allow local scripts once:
 `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
 
 ### 3. Install dependencies
@@ -120,15 +334,14 @@ python install.py
 ```
 
 This detects your GPU and NVIDIA driver, installs the matching PyTorch build
-from the right wheel index, then installs everything in `requirements.txt`
-(Transformers, safetensors, FastAPI, and the Hugging Face CLI among others).
-It finishes by running a real CUDA kernel to confirm the build actually works
-on your card.
+from the correct wheel index, then installs everything in `requirements.txt`.
+It finishes by running a real CUDA kernel to confirm the build works on your
+card.
 
-PyTorch is deliberately **not** listed in `requirements.txt`. The correct
-wheel depends on hardware pip cannot see, so a plain `pip install -r` would
-give you a build that imports fine and then fails with
-`no kernel image is available` the first time you run a layer.
+PyTorch is deliberately **not** in `requirements.txt`: the correct wheel
+depends on hardware pip cannot detect, so a plain `pip install -r` gives you
+a build that imports fine and then fails with `no kernel image is available`
+the first time you run a layer.
 
 If detection gets it wrong:
 
@@ -138,21 +351,18 @@ python install.py --cpu         # force the CPU-only build
 python install.py --cuda 12.8   # force a specific CUDA version
 ```
 
-Expected output ends with something like:
-
-```
-Verifying
-  torch 2.7.0+cu128
-  cuda_available True
-  device NVIDIA GeForce RTX 5070 Ti
-```
-
 ## Setup
 
 ### 1. Configure the machine
 
-Create `config/local_config.json` (the system runs with defaults if this
-file is absent, but you need to set at least `tailscale_ip`):
+Find this machine's Tailscale address:
+
+```bash
+tailscale ip -4
+```
+
+Create `config/local_config.json` (defaults apply if absent, but
+`tailscale_ip` must be set):
 
 ```json
 {
@@ -165,47 +375,42 @@ file is absent, but you need to set at least `tailscale_ip`):
 }
 ```
 
-`tailscale_ip` is this machine's address — find it with `tailscale ip -4`.
-Use `"cpu"` for `device` on machines without a GPU. `overhead` controls how much memory is held in reserve (0.2 means 20%
-stays free for the KV cache, activations, and the OS). Raise it if you
-hit out-of-memory errors; lower it to fit more layers on the machine.
+Use `"cpu"` for `device` on machines without a GPU. `overhead` is how much
+memory stays in reserve (0.2 means 20% free for the KV cache, activations,
+and the OS) — raise it if you hit out-of-memory errors, lower it to fit more
+layers.
 
-You can edit all of these later from the Settings panel in the web UI.
+All of these are also editable from the Settings panel in the web UI.
 
 ### 2. Get the model files
 
-The walkthrough below uses **Llama 3.2 3B Instruct**. Any Hugging Face
-decoder-only model works the same way — Mistral, Qwen, Phi, and so on.
+The walkthrough uses **Llama 3.2 3B Instruct**. Any HuggingFace decoder-only
+model works the same way — Mistral, Qwen, Phi, and so on.
 
 **Accept the license.** Llama models are gated. Visit
 [meta-llama/Llama-3.2-3B-Instruct](https://huggingface.co/meta-llama/Llama-3.2-3B-Instruct)
-while signed in and accept the terms. Approval is usually immediate. Skipping
-this gives you a 403 on download.
+while signed in and accept the terms; approval is usually immediate. Skipping
+this gives a 403 on download.
 
-**Log in.** Create a token at
-[huggingface.co/settings/tokens](https://huggingface.co/settings/tokens)
-(read access is enough), then:
+**Log in.** Create a read token at
+[huggingface.co/settings/tokens](https://huggingface.co/settings/tokens),
+then:
 
 ```bash
 hf auth login
 ```
 
-Paste the token when prompted. If `hf` isn't recognized, use
-`huggingface-cli login` instead. The login is saved to your home directory,
-so you only do this once per machine.
+If `hf` isn't recognized, use `huggingface-cli login` — same command, older
+name. The login is saved to your home directory, so it's once per machine.
 
-**Download into a folder named for the model.** The folder name is what you
-will refer to everywhere else, so keep it short:
+**Download into a folder named for the model.** That folder name is what you
+refer to everywhere else, so keep it short:
 
 ```bash
 hf download meta-llama/Llama-3.2-3B-Instruct --local-dir models/llama-3b
 ```
 
-If `hf` isn't recognized, use `huggingface-cli download` instead — same
-command, older name.
-
-About 6 GB. `models/llama-3b/` should now contain `config.json`,
-`tokenizer.json`, and a couple of `model-0000X-of-0000X.safetensors` files.
+About 6 GB.
 
 **Split it into per-layer files:**
 
@@ -213,14 +418,13 @@ About 6 GB. `models/llama-3b/` should now contain `config.json`,
 python create_layer_files.py llama-3b
 ```
 
-This writes `layers/llama-3b/layer_0.safetensors` through `layer_27.safetensors`,
-plus `embed_tokens`, `norm`, and `head`. Run it **once** on any machine, then
-copy the `layers/` folder to the others — or copy only the layer files a given
-machine will be assigned, if you know the split in advance.
+This writes `layers/llama-3b/layer_0.safetensors` through
+`layer_27.safetensors`, plus `embed_tokens`, `norm`, and `head`. Run it
+**once** on any machine, then copy `layers/` to the others — or copy only the
+files a given machine will be assigned.
 
-**Then delete almost all of it.** Once split, the full weight files are never
-read again at runtime. Only five small files must remain in
-`models/llama-3b/`:
+**Then delete almost all of it.** Once split, the original weights are never
+read again. Only five small files must remain in `models/llama-3b/`:
 
 ```
 config.json                generation_config.json
@@ -232,14 +436,10 @@ Roughly 9 MB instead of 6 GB. Safe to delete: `model-0000X.safetensors`,
 `model.safetensors.index.json`, `original/`, `.cache/`, `LICENSE.txt`,
 `README.md`. At runtime the code only calls `AutoConfig` and `AutoTokenizer`,
 which read JSON and never touch the weights — the layer files supply
-everything else.
+everything else, on every path including single-machine mode.
 
-This applies to every path, including single-machine mode — that rebuilds
-the complete model from the layer files too, so there is no reason to keep
-the originals.
-
-**Repeat on every machine.** Each one needs the five JSON files and its own
-layer files. You can copy them across rather than downloading again.
+**Repeat on every machine.** Each needs the five JSON files and its own layer
+files; copying beats downloading again.
 
 ### 3. Benchmark each machine
 
@@ -249,13 +449,10 @@ On every machine, for every model you plan to run:
 python benchmark.py llama-3b
 ```
 
-This runs a short benchmark (about 30 seconds) measuring how fast one
-layer executes and how much memory is free, writing the result to
-`benchmark/`. The split algorithm reads
-these — **a machine without a benchmark for a model is skipped when the
-pipeline is built.**
-
-Re-run it if you change hardware or move a machine.
+A short benchmark (about 30 seconds) measuring layer execution speed and free
+memory, written to `benchmark/`. The allocation algorithm reads these — **a
+machine with no benchmark for a model is skipped when the pipeline is
+built.** Re-run it if you change hardware.
 
 ## Launch
 
@@ -271,13 +468,12 @@ serves the web UI, and opens a browser at `http://localhost:8000`.
 | Flag | Effect |
 |---|---|
 | `--daemon-only` | Take part in inference with no UI |
-| `--no-browser` | Start the UI but don't open a browser |
+| `--no-browser` | Start the UI without opening a browser |
 | `--port 8100` | Serve the UI on a different port |
 | `--daemon-port N` | Change the daemon port (default 65433) |
 
-You can send queries from whichever machine you're sitting at. The UI is
-local to each machine — `localhost:8000` on Machine A only serves Machine
-A's browser. Each machine keeps its own conversations.
+The UI is local to each machine — `localhost:8000` on Machine A serves only
+Machine A's browser. Each machine keeps its own conversations.
 
 There is also a terminal client:
 
@@ -288,136 +484,188 @@ python main.py "What is 2+2?"     # one-shot
 
 ## Using it
 
-The first query on a model runs the **cold path**: discover machines,
-collect benchmarks, compute the split, load layers, connect the chain, then
-generate. Expect several seconds.
+The first query on a model runs the cold path and takes several seconds.
+Every query after reuses the loaded model, open connections, and conversation
+cache, and starts immediately.
 
-Every query after that runs the **warm path**, reusing the loaded model, the
-open connections, and the conversation cache. Expect it to start
-immediately.
+The pipeline strip above the chat shows which machine holds which layers and
+which one you're sitting at. The **Activity** panel shows live logs from
+every machine in the pipeline, each collapsible — including machines you
+aren't sitting at.
 
-The pipeline strip above the chat shows which machine holds which layers, and
-which one you're sitting at. The **Activity** panel on the right shows live
-logs from every machine in the pipeline, each in its own collapsible section
-— including the machines you aren't sitting at.
+**To watch queries interleave:** open the UI on two machines, start a
+conversation on each, and send both at once. The Activity panel on the first
+machine shows token lines alternating between session IDs. Two queries in the
+*same* conversation run in order, since a follow-up needs the previous
+answer.
 
-### Seeing concurrent queries interleave
+### Things that will surprise you
 
-Open the UI on two machines, start a conversation on each, and send both at
-once. In the Activity panel on the master you'll see token lines alternating
-between the two session IDs — the scheduler advancing both requests one step
-at a time.
+These are properties of the approach, not defects.
 
-Two queries in the *same* conversation are handled in order, since a
-follow-up question needs the previous answer to exist.
-
-## Performance notes
-
-These are properties of the approach, not bugs — worth knowing before you're
-surprised by them.
-
-**Prefill dominates on a slow tail machine.** The first query in a
-conversation processes the entire prompt through every layer. On a GPU that
-takes a second; on a CPU holding several layers, a 1500-token conversation
-can take minutes. Later turns are fast because the cache retains all previous tokens — only
-the newly added message gets processed through the layers.
+**Prefill dominates on a slow machine.** The first query in a conversation
+runs the entire prompt through every layer. On a GPU that's a second; on a
+CPU holding several layers, a 1500-token conversation can take minutes. Later
+turns are fast because the cache retains previous tokens — only the new
+message is processed.
 
 **Switching models mid-conversation is expensive.** The cache is per
-conversation *and* per model, and a cache built by one model can't be used by
-another. Switching re-processes the whole history through the new model.
-Starting a fresh conversation is much faster.
+conversation *and* per model, and one model's cache can't be reused by
+another. Switching reprocesses the whole history. Starting a fresh
+conversation is much faster.
 
-**Check the balance ratio.** The split table prints one — 1.0 is perfect,
-and low numbers mean one machine is holding everyone else up. A CPU tail at
-0.16 means the CPU is doing essentially all the waiting. Giving the slow machine fewer layers (by lowering `overhead` on the fast
-machine so it claims more) improves the balance at the cost of more memory
-pressure on the GPU.
+**Watch the balance ratio.** The split table prints one; 1.0 is perfect. A
+CPU tail at 0.16 means the CPU is doing essentially all the waiting. Lowering
+`overhead` on the fast machine lets it claim more layers, at the cost of
+memory pressure there.
 
-**Models compete for memory.** Running two models at once needs room for
-both. When memory is tight the least recently used model is unloaded, and
-using it again pays the cold path. On a 16 GB GPU, Llama 3B and Llama 8B
-genuinely cannot coexist.
-
-## Layout
-
-```
-launch.py           Start the daemon and the web UI
-install.py          Hardware-aware dependency installer
-main.py             Terminal client
-
-daemon.py           Per-machine service: accepts queries, owns peers
-inference_peer.py   One machine's role in a pipeline; the wire protocol
-model.py            Loads a layer range; role-specific forward passes
-scheduler.py        Round-robin interleaving of concurrent requests
-user_query.py       Orchestration: discovery, warm/cold paths
-hardware.py         Computes the layer split from benchmarks
-session.py          Conversations, persisted as JSON
-serialization.py    Tensor wire format
-protocol.py         Length-prefixed message framing
-logbuffer.py        Captures console output for the Activity panel
-web/                FastAPI server and the UI
-
-benchmark.py            Measure this machine's speed for a model
-create_layer_files.py   Split a model into per-layer files
-```
+**Models compete for memory.** Two models at once need room for both. Under
+pressure the least recently used is unloaded and pays the cold path next
+time. On a 16 GB GPU, Llama 3B and Llama 8B genuinely cannot coexist.
 
 ## Troubleshooting
 
-**A machine shows as unavailable.** It has no benchmark for that model. Run
+**A machine shows as unavailable.** No benchmark for that model. Run
 `python benchmark.py <model>` on it.
 
-**`403 Forbidden` downloading a model.** You haven't accepted the license on
-the model's Hugging Face page, or you aren't logged in. Accept the terms while
-signed in, then `hf auth login`.
+**`403 Forbidden` downloading a model.** License not accepted, or not logged
+in. Accept the terms while signed in, then `hf auth login`.
 
-**`hf: command not found`.** The virtual environment isn't active, or
-`install.py` hasn't run yet. Activate it and re-run `python install.py`. On
-`huggingface_hub` older than 0.34 the command is `huggingface-cli` instead.
+**`hf: command not found`.** Virtual environment not active, or `install.py`
+hasn't run. On `huggingface_hub` older than 0.34 the command is
+`huggingface-cli`.
 
 **`ModuleNotFoundError` on a package you installed.** Almost always a
-deactivated virtual environment in a new terminal. Check for `(.venv)` in
-your prompt.
+deactivated virtual environment in a new terminal. Check for `(.venv)`.
 
-**"missing N of M layer files".** The split is incomplete for that model.
-Re-run `python create_layer_files.py <model>` — that step needs the original
-weights, so re-download them first if you have already deleted them.
+**"missing N of M layer files".** The split is incomplete. Re-run
+`python create_layer_files.py <model>` — that needs the original weights, so
+re-download them first if you've deleted them.
 
 **`no kernel image is available`.** Wrong PyTorch build for your GPU. Re-run
-`python install.py`, or force a version with `--cuda 12.8`.
+`python install.py`, or force it with `--cuda 12.8`.
 
-**`PermissionError` or `WinError 10013` binding a port.** Windows reserves
-port ranges for Hyper-V and WSL. Check with
-`netsh interface ipv4 show excludedportrange protocol=tcp` and move the port
-range in `_model_port()` in `user_query.py` if yours collides.
+**`PermissionError` / `WinError 10013` binding a port.** Windows reserves
+port ranges for Hyper-V and WSL. Check
+`netsh interface ipv4 show excludedportrange protocol=tcp` and move the range
+in `_model_port()` in `user_query.py` if yours collides.
 
 **Tailscale says "no internet access."** Usually a Windows connectivity check
-failing, not a real problem — the machines only need to reach each other.
-Confirm with `ping <other machine's tailscale ip>`.
+failing, not a real problem — machines only need to reach each other. Confirm
+with `ping <other machine's tailscale ip>`.
 
-**A machine went offline mid-conversation.** The next query rebuilds the
-pipeline across whatever is still available, down to a single machine.
+**A machine went offline mid-conversation.** The next query rebuilds across
+whatever remains, down to a single machine.
 
-## Status
+## Project structure
 
-A working prototype — functional for testing, demos, and personal use on a
-small network. Not hardened for production — no access control, no monitoring, no TLS on
-the daemon protocol beyond what Tailscale provides.
+```
+launch.py               Starts the daemon and web UI
+install.py              Hardware-aware dependency installer
+main.py                 Terminal client
 
-### Known limitations
+daemon.py               Per-machine inference service
+inference_peer.py       A machine's role in a pipeline; wire protocol
+model.py                Layer loading and role-specific forward passes
+scheduler.py            Concurrent request scheduling
+user_query.py           Query orchestration and pipeline construction
+hardware.py             Benchmarking and layer allocation
+session.py              Conversation persistence
+serialization.py        Tensor serialization
+protocol.py             TCP message framing
+logbuffer.py            Console capture for the Activity panel
+web/                    FastAPI server and web interface
 
-- Layer assignments only change between queries, not during one
-- All machines must be reachable on the same tailnet
-- Every machine must run the same version — an older daemon won't understand
-  newer messages
-- Traffic between machines is encrypted by Tailscale but the daemon
-  protocol itself has no authentication — any device on your tailnet can
-  send queries
-- Mobile devices aren't supported yet
-- Memory is either GPU or system RAM per machine, never both together
+benchmark.py            Measure this machine's speed for a model
+create_layer_files.py   Per-layer weight extraction
+```
 
-### Possible next steps
+---
 
-Hybrid GPU+RAM placement within a machine; hosting pre-split layers so a new
-machine downloads only its own; per-node timing telemetry in the UI;
-quantized weights so weaker machines can hold more layers; an authenticated
-API for multi-user serving.
+## Design notes
+
+Detail on the problems that shaped the implementation, for anyone reading the
+source.
+
+### What layer-level validation caught
+
+The >0.999 cosine similarity check exists because three separate bugs each
+produced fluent, entirely convincing output:
+
+- A **KV cache keyed by the wrong name**, so cached entries were written and
+  then never found — correct output, silently no cache reuse.
+- **Cache indices left pointing at pre-split positions** after the layer stack
+  was sliced, so attention read from the wrong offsets.
+- A **causal mask that stopped being applied** once the stack was rebuilt,
+  letting positions attend forward in the sequence.
+
+None raised an exception. Without a per-layer numerical oracle, all three
+would have shipped.
+
+### A scheduling heuristic that was exactly backwards
+
+The first scheduler prioritized decode steps over prefill, reasoning that
+finishing an in-progress request frees the pipeline sooner. It starved new
+requests completely: a running request's decode always outranked a waiting
+request's prefill, so a second query never started until the first finished.
+
+That heuristic is correct for continuous batching, where decode steps across
+requests are batched into one forward pass. It is actively wrong for
+one-step-at-a-time scheduling, where it degenerates into strict FIFO.
+Replaced with least-recently-stepped ordering.
+
+### Protocol decisions
+
+**Responses travel on the connection the query arrived on.** An earlier design
+had the last machine open a separate socket back to the initiator, which
+meant port allocation, bind conflicts on restart, and query IDs to match
+responses to requests. Replying on the existing connection makes
+request/response pairing implicit and scales to concurrent queries for free.
+
+**Two machines share one full-duplex socket.** The original used a separate
+port per direction; one was silently blocked by Windows Firewall, producing a
+hang with no error. TCP is already bidirectional and the two ends alternate
+rather than transmit simultaneously, so one connection carries both
+directions with message types distinguishing them.
+
+### Failure handling without a coordinator
+
+There is no central controller, so each machine must independently notice
+when the pipeline it belongs to has stopped existing.
+
+A machine leaving used to leave behind a peer that *looked* healthy — model
+loaded, sockets present — but whose generation loop had died. Later queries
+matched the cached pipeline, routed onto dead sockets, and hung. Liveness is
+now based on whether the generation thread or scheduler is actually running,
+a departing machine announces itself before exiting, and a connection-level
+failure releases the peer so the next query rebuilds.
+
+Memory eviction had a related fault: it ran while holding the lock every
+other query needed, so unloading one model stalled every other model for the
+duration. Eviction now selects a victim under the lock and does the slow work
+outside it, and never evicts a model that is mid-generation.
+
+---
+
+## Limitations
+
+A working research prototype, intended for experimentation, demonstrations,
+and research into distributed and edge inference rather than production
+deployment.
+
+- Layer assignments change between queries, not during an active generation
+- All machines must be reachable on the same Tailscale network
+- All machines must run compatible versions
+- The daemon protocol has no authentication of its own beyond Tailscale's
+  network-level access control
+- Memory is managed as either GPU memory or system RAM per machine, never both
+- Network communication is the dominant latency cost for fast GPU pipelines
+- Mobile devices are not yet supported
+
+## Future work
+
+Dynamic rebalancing during active generation · hybrid GPU + CPU memory
+placement · quantized distributed weights · token batching · speculative
+decoding · per-node runtime telemetry · hosted layer files so a new machine
+downloads only its own · authenticated multi-user API · mobile and edge
+device support
