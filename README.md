@@ -52,7 +52,7 @@ hardware performance rather than configured by hand.
 | RAM reduction | Up to 92% on a memory-constrained node |
 | VRAM reduction | Up to 67% |
 | Layer assignment | Computed automatically from per-machine benchmarks |
-| Pipelines verified | 2- and 3-machine, mixed GPU and CPU-only |
+| Pipelines verified | up to 5 nodes mixed GPU and CPU-only |
 | Models tested | Llama 3.2 3B (28 layers), Llama 3.1 8B (32 layers) |
 | Network protocol | Custom length-prefixed TCP, 21 message types |
 | Concurrency | Multiple interleaved generations on one pipeline |
