@@ -330,6 +330,7 @@ If PowerShell blocks the activation script, allow local scripts once:
 ### 3. Install dependencies
 
 ```bash
+python -m pip install --upgrade pip setuptools wheel
 python install.py
 ```
 
