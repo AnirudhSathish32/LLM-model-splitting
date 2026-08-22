@@ -18,6 +18,7 @@ class InferencePeer:
         # Counts as busy from creation: a peer still being wired up has no
         # traffic yet, and must not be evicted out from under its own query.
         self.last_activity = time.time()
+        self._cancelled = False    # set by cleanup() to abort connect retries
         self.shared = shared
         self.local = local
 
@@ -193,20 +194,30 @@ class InferencePeer:
         return conn
 
     def _connect_with_retry(self, ip, port, max_retries, retry_delay):
-        """Connect to a peer with exponential backoff retry. TCP_NODELAY set."""
+        """Connect to a peer with exponential backoff retry. TCP_NODELAY set.
+        Aborts early if cleanup() sets _cancelled."""
         delay = retry_delay
         for attempt in range(max_retries):
+            if self._cancelled:
+                raise ConnectionError(
+                    f"Connection to {ip}:{port} cancelled (peer released)")
             try:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(delay + 2.0)
                 sock.connect((ip, port))
+                sock.settimeout(None)
                 sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 return sock
-            except ConnectionRefusedError:
+            except (ConnectionRefusedError, TimeoutError, OSError):
                 if attempt < max_retries - 1:
                     print(f"[Peer] Connection to {ip}:{port} refused, "
                           f"retry {attempt+1}/{max_retries} in {delay:.1f}s")
-                    time.sleep(delay)
-                    delay = min(delay * 2, 10.0)  # cap at 10s
+                    # Sleep in short intervals so cancellation is responsive
+                    slept = 0.0
+                    while slept < delay and not self._cancelled:
+                        time.sleep(min(0.5, delay - slept))
+                        slept += 0.5
+                    delay = min(delay * 2, 10.0)
                 else:
                     raise ConnectionError(
                         f"Failed to connect to {ip}:{port} after {max_retries} attempts")
@@ -588,7 +599,9 @@ class InferencePeer:
     # ================================================================
 
     def cleanup(self):
-        """Close connections and unload model."""
+        """Close connections and unload model. Cancels any in-progress connect retries."""
+        self._cancelled = True
+
         for conn in (self.upstream_conn, self.downstream_conn):
             if conn is not None:
                 try:
