@@ -2,8 +2,10 @@ import torch
 import time
 import socket
 import struct
+import telemetry
 
 from model import Model
+
 from networking.serialization import tensor_to_bytes, tensor_from_bytes, to_bytes, from_bytes
 from networking.protocol import send_message, read_message
 from config import (
@@ -436,18 +438,39 @@ class InferencePeer:
 
         # Forward through master layers
         print(f"[Token {tc}] ({sid}) forward (input shape {model_input.shape})...", flush=True)
+        _t_fwd = time.perf_counter()
         hidden, request.cache = self.model.forward(model_input, request.cache)
+        _compute_ms = (time.perf_counter() - _t_fwd) * 1000.0
         print(f"[Token {tc}] ({sid}) forward done → sending hidden downstream", flush=True)
 
-        # Send hidden downstream
+        # Send hidden downstream. The clock from here until a token comes
+        # back covers the network in both directions plus every downstream
+        # stage's compute.
         msg_type = MSG_FIRST_PASS if request.first_pass else MSG_NEXT_PASS
+        _t_rt = time.perf_counter()
         self.send_hidden(hidden, msg_type)
+        was_prefill = request.first_pass
         request.first_pass = False
         print(f"[Token {tc}] ({sid}) waiting for token from tail...", flush=True)
 
         # Receive token from tail
         msg_string, token = self.receive_token()
+        _roundtrip_ms = (time.perf_counter() - _t_rt) * 1000.0
         print(f"[Token {tc}] ({sid}) received '{msg_string}'", flush=True)
+
+        if telemetry.is_enabled():
+            telemetry.record(
+                session=sid,
+                token_index=tc,
+                phase="prefill" if was_prefill else "decode",
+                input_tokens=int(model_input.shape[1]),
+                context_tokens=int(request.full_sequence_ids.shape[1]),
+                hidden_bytes=hidden.numel() * hidden.element_size(),
+                master_compute_ms=round(_compute_ms, 4),
+                roundtrip_ms=round(_roundtrip_ms, 4),
+                step_ms=round(_compute_ms + _roundtrip_ms, 4),
+                master_layers=self.model.layer_end - self.model.layer_start + 1,
+            )
 
         if msg_string == "stop":
             print(f"[Token {tc}] ({sid}) downstream node shut down this pipeline",
