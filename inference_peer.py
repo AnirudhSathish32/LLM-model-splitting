@@ -459,6 +459,10 @@ class InferencePeer:
         # Always record — this travels with the request back to the
         # orchestrator, so it works cross-process unlike the telemetry module.
         request.timing_records.append({
+            # Monotonic clock in the daemon process. Records from all
+            # concurrent requests share it, so ordering across sessions
+            # is meaningful — that is what the fairness analysis needs.
+            "wall_time": time.perf_counter(),
             "session": sid,
             "token_index": tc,
             "phase": "prefill" if was_prefill else "decode",
