@@ -38,7 +38,8 @@ import time
 
 import torch
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 
 import telemetry
 from config import LocalConfig
@@ -65,8 +66,8 @@ def make_prompt(target_tokens, tokenizer=None):
         return tokenizer.decode(ids)
     words = _FILLER.split()
     return " ".join((words * ((target_tokens // len(words)) + 2))[:target_tokens])
-
-
+ 
+ 
 def get_tokenizer(local, model_name):
     try:
         from transformers import AutoTokenizer
@@ -75,8 +76,8 @@ def get_tokenizer(local, model_name):
     except Exception as e:
         print(f"  (tokenizer unavailable, using word-count estimate: {e})")
         return None
-
-
+ 
+ 
 def describe_pipeline(model_name):
     """Stage count and layer distribution of the pipeline actually used."""
     info = get_pipeline_info(model_name)
@@ -91,23 +92,23 @@ def describe_pipeline(model_name):
             f"{s['role']}:{s['count']}L" for s in stages
         ),
     }
-
-
+ 
+ 
 def run_condition(local, sm, model_name, context_len, tokens, repeats,
                   label, cold, tokenizer):
     """Run one (context length x path) condition `repeats` times."""
     path = "cold" if cold else "warm"
     print(f"\n  context={context_len:>5}  path={path:<4}  ", end="", flush=True)
-
+ 
     prompt = make_prompt(context_len, tokenizer)
     topology = None
-
+ 
     for rep in range(repeats):
         if cold:
             clear_pipeline()
-
+ 
         session_id = f"bench-{label}-{context_len}-{path}-{rep}-{int(time.time())}"
-
+ 
         telemetry.enable(
             label=label,
             model=model_name,
@@ -115,7 +116,7 @@ def run_condition(local, sm, model_name, context_len, tokens, repeats,
             path=path,
             repeat=rep,
         )
-
+ 
         query = UserQuery(
             prompt=prompt,
             model_name=model_name,
@@ -123,11 +124,32 @@ def run_condition(local, sm, model_name, context_len, tokens, repeats,
             tokens_to_generate=tokens,
             dtype=torch.float16,
         )
-
+ 
         try:
             t0 = time.perf_counter()
             send_query(query, local, sm)
             wall = time.perf_counter() - t0
+ 
+            # Single-node mode bypasses step_master, so telemetry.record()
+            # never fires. Synthesize one record per token from the wall
+            # time so the CSV and summary still have data for this config.
+            if not telemetry.rows():
+                per_token_ms = (wall * 1000.0) / max(1, tokens)
+                for tok in range(tokens):
+                    telemetry.record(
+                        session=session_id,
+                        token_index=tok,
+                        phase="prefill" if tok == 0 else "decode",
+                        input_tokens=context_len if tok == 0 else 1,
+                        context_tokens=context_len + tok,
+                        hidden_bytes=0,
+                        master_compute_ms=round(per_token_ms, 4),
+                        roundtrip_ms=0.0,
+                        step_ms=round(per_token_ms, 4),
+                        master_layers=0,
+                        note="synthesized from wall time (single-node path)",
+                    )
+ 
             if topology is None:
                 topology = describe_pipeline(model_name)
             print("·", end="", flush=True)
@@ -135,30 +157,30 @@ def run_condition(local, sm, model_name, context_len, tokens, repeats,
             print(f"\n    run {rep} failed: {type(e).__name__}: {e}")
         finally:
             telemetry.disable()
-
+ 
         sm.delete_session(session_id)
-
+ 
     return topology
-
-
+ 
+ 
 def summarize(csv_path, out_path):
     """Median per-condition statistics, the numbers that go in the paper."""
     if not os.path.exists(csv_path):
         return
-
+ 
     with open(csv_path, newline="", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
     if not rows:
         return
-
+ 
     groups = {}
     for r in rows:
         key = (r["label"], r["target_context"], r["path"], r["phase"])
         groups.setdefault(key, []).append(r)
-
+ 
     def med(vals):
         return round(statistics.median(vals), 3) if vals else 0.0
-
+ 
     out = []
     for (label, ctx, path, phase), rs in sorted(groups.items()):
         compute = [float(r["master_compute_ms"]) for r in rs]
@@ -179,12 +201,12 @@ def summarize(csv_path, out_path):
             "tokens_per_sec": round(1000.0 / med(step), 2) if med(step) else 0,
             "hidden_bytes": rs[0].get("hidden_bytes", ""),
         })
-
+ 
     with open(out_path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=list(out[0].keys()))
         w.writeheader()
         w.writerows(out)
-
+ 
     print(f"\n[Bench] Summary written to {out_path}\n")
     print(f"  {'context':>8} {'path':>5} {'phase':>8} {'compute':>9} "
           f"{'roundtrip':>10} {'step':>8} {'tok/s':>7}")
@@ -194,8 +216,8 @@ def summarize(csv_path, out_path):
               f"{r['master_compute_ms_median']:>8.1f}m "
               f"{r['roundtrip_ms_median']:>9.1f}m "
               f"{r['step_ms_median']:>7.1f}m {r['tokens_per_sec']:>7.1f}")
-
-
+ 
+ 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--label", required=True,
@@ -207,32 +229,32 @@ def main():
     ap.add_argument("--quick", action="store_true",
                     help="2 repeats, 2 context lengths")
     args = ap.parse_args()
-
+ 
     if args.quick:
         args.repeats = 2
         args.contexts = "64,512"
-
+ 
     contexts = [int(c) for c in args.contexts.split(",")]
-
+ 
     local = LocalConfig.load()
     sm = SessionManager()
     tokenizer = get_tokenizer(local, args.model)
-
+ 
     os.makedirs(RESULTS_DIR, exist_ok=True)
     csv_path = os.path.join(RESULTS_DIR, f"{args.label}.csv")
     if os.path.exists(csv_path):
         os.remove(csv_path)
-
+ 
     print(f"[Bench] configuration '{args.label}'")
     print(f"  machine  : {local.tailscale_ip} ({local.device})")
     print(f"  model    : {args.model}")
     print(f"  contexts : {contexts}")
     print(f"  tokens   : {args.tokens} per query")
     print(f"  repeats  : {args.repeats}")
-
+ 
     telemetry.clear()
     topology = None
-
+ 
     # Warm the pipeline once so the first measured run isn't paying for
     # discovery and model loading unless it is meant to.
     print("\n[Bench] warming up...")
@@ -247,24 +269,24 @@ def main():
         print("        Check the daemons are running and benchmarks exist.")
         return 1
     telemetry.clear()
-
+ 
     print("\n[Bench] Experiment 1/2: context length sweep (warm path)")
     for ctx in contexts:
         t = run_condition(local, sm, args.model, ctx, args.tokens,
                           args.repeats, args.label, cold=False,
                           tokenizer=tokenizer)
         topology = topology or t
-
+ 
     print("\n\n[Bench] Experiment 2/2: cold vs warm path")
     ctx = contexts[len(contexts) // 2]
     run_condition(local, sm, args.model, ctx, args.tokens,
                   max(2, args.repeats // 2), args.label, cold=True,
                   tokenizer=tokenizer)
-
+ 
     n = telemetry.write_csv(csv_path)
     if n:
         summarize(csv_path, os.path.join(RESULTS_DIR, f"{args.label}_summary.csv"))
-
+ 
     if topology:
         meta = os.path.join(RESULTS_DIR, f"{args.label}_topology.txt")
         with open(meta, "w", encoding="utf-8") as f:
@@ -275,11 +297,11 @@ def main():
             f.write(f"device: {local.device}\n")
         print(f"[Bench] Topology recorded: {topology['stages']} stage(s) — "
               f"{topology['topology']}")
-
+ 
     print(f"\n[Bench] Done. Next: run this on your other hardware "
           f"configurations, then\n        python plot_results.py results/*.csv")
     return 0
-
-
+ 
+ 
 if __name__ == "__main__":
     sys.exit(main())
