@@ -4,7 +4,6 @@ import socket
 import struct
 
 from model import Model
-import perf_telemetry as telemetry
 from networking.serialization import tensor_to_bytes, tensor_from_bytes, to_bytes, from_bytes
 from networking.protocol import send_message, read_message
 from config import (
@@ -457,19 +456,20 @@ class InferencePeer:
         _roundtrip_ms = (time.perf_counter() - _t_rt) * 1000.0
         print(f"[Token {tc}] ({sid}) received '{msg_string}'", flush=True)
 
-        if telemetry.is_enabled():
-            telemetry.record(
-                session=sid,
-                token_index=tc,
-                phase="prefill" if was_prefill else "decode",
-                input_tokens=int(model_input.shape[1]),
-                context_tokens=int(request.full_sequence_ids.shape[1]),
-                hidden_bytes=hidden.numel() * hidden.element_size(),
-                master_compute_ms=round(_compute_ms, 4),
-                roundtrip_ms=round(_roundtrip_ms, 4),
-                step_ms=round(_compute_ms + _roundtrip_ms, 4),
-                master_layers=self.model.layer_end - self.model.layer_start + 1,
-            )
+        # Always record — this travels with the request back to the
+        # orchestrator, so it works cross-process unlike the telemetry module.
+        request.timing_records.append({
+            "session": sid,
+            "token_index": tc,
+            "phase": "prefill" if was_prefill else "decode",
+            "input_tokens": int(model_input.shape[1]),
+            "context_tokens": int(request.full_sequence_ids.shape[1]),
+            "hidden_bytes": hidden.numel() * hidden.element_size(),
+            "master_compute_ms": round(_compute_ms, 4),
+            "roundtrip_ms": round(_roundtrip_ms, 4),
+            "step_ms": round(_compute_ms + _roundtrip_ms, 4),
+            "master_layers": self.model.layer_end - self.model.layer_start + 1,
+        })
 
         if msg_string == "stop":
             print(f"[Token {tc}] ({sid}) downstream node shut down this pipeline",

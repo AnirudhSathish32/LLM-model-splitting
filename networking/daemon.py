@@ -524,6 +524,18 @@ class Daemon:
 
         request.done_event.wait()
 
+        # Forward per-token timing to the orchestrator so the harness
+        # can write it — these records were collected in the daemon
+        # process and can't reach the harness any other way.
+        if hasattr(request, "timing_records") and request.timing_records:
+            import json as _json
+            for rec in request.timing_records:
+                try:
+                    payload = _json.dumps({"type": "timing", **rec}).encode("utf-8")
+                    send_message(conn, MSG_TOKEN_STREAM, payload)
+                except Exception:
+                    break
+
         if getattr(request, "error", None):
             print(f"[Daemon] {label} failed: {request.error}")
 

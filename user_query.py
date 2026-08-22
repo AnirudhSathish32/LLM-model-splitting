@@ -40,22 +40,48 @@ class UserQuery:
     # Callers pass torch.float16 / torch.bfloat16 / torch.float32 directly.
 
 
+# Timing records collected from the daemon during the last query.
+# The harness reads these after send_query returns.
+_last_timing_records = []
+
+
 def _read_until_response(conn, on_token=None):
     """
     Read from the master's control connection, forwarding MSG_TOKEN_STREAM
     deltas to on_token, until a terminal message arrives.
+    Timing records from the daemon are collected into _last_timing_records.
     Returns (msg_type, payload) for the terminal message.
     """
+    global _last_timing_records
+    import json as _json
+
     while True:
         msg_type, payload = read_message(conn)
         if msg_type == MSG_TOKEN_STREAM:
-            if on_token:
+            text = payload.decode("utf-8")
+            # Timing records arrive as JSON with type=timing
+            if text.startswith('{"type": "timing"'):
                 try:
-                    on_token(payload.decode("utf-8"))
+                    rec = _json.loads(text)
+                    rec.pop("type", None)
+                    _last_timing_records.append(rec)
                 except Exception:
-                    pass    # a broken consumer must not kill the query
+                    pass
+            elif on_token:
+                try:
+                    on_token(text)
+                except Exception:
+                    pass
             continue
         return msg_type, payload
+
+
+def get_last_timing_records():
+    """Return timing records from the most recent distributed query, then clear."""
+    global _last_timing_records
+    out = list(_last_timing_records)
+    _last_timing_records = []
+    return out
 
 
 # ═══════════════════════════════════════════════════════════════

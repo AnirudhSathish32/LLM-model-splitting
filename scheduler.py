@@ -49,6 +49,7 @@ class InFlightRequest:
         self.done_event = threading.Event()
         self.token_queue = queue.Queue() # incremental text deltas for streaming
         self._last_decoded = ""          # for computing deltas
+        self.timing_records = []        # per-token timing dicts, filled by step_master
         self.created_at = time.time()
         self.last_stepped_at = 0.0      # 0.0 = never stepped → picked first (round-robin)
 

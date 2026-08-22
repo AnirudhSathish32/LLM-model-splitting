@@ -38,12 +38,12 @@ import time
 
 import torch
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import perf_telemetry as telemetry
 from config import LocalConfig
 from session import SessionManager
-from user_query import UserQuery, send_query, clear_pipeline, get_pipeline_info
+from user_query import UserQuery, send_query, clear_pipeline, get_pipeline_info, get_last_timing_records
 
 RESULTS_DIR = "results"
 
@@ -108,6 +108,7 @@ def run_condition(local, sm, model_name, context_len, tokens, repeats,
 
         session_id = f"bench-{label}-{context_len}-{path}-{rep}-{int(time.time())}"
 
+        telemetry.clear()
         telemetry.enable(
             label=label,
             model=model_name,
@@ -128,6 +129,19 @@ def run_condition(local, sm, model_name, context_len, tokens, repeats,
             t0 = time.perf_counter()
             send_query(query, local, sm)
             wall = time.perf_counter() - t0
+
+            # Collect timing: distributed path sends records through the
+            # stream; local path records via perf_telemetry in-process.
+            daemon_records = get_last_timing_records()
+            local_records = telemetry.rows()
+
+            for rec in (daemon_records or local_records):
+                rec["label"] = label
+                rec["model"] = model_name
+                rec["target_context"] = context_len
+                rec["path"] = path
+                rec["repeat"] = rep
+                all_records.append(rec)
 
             if topology is None:
                 topology = describe_pipeline(model_name)
@@ -232,6 +246,7 @@ def main():
     print(f"  repeats  : {args.repeats}")
 
     telemetry.clear()
+    all_records = []
     topology = None
 
     # Warm the pipeline once so the first measured run isn't paying for
@@ -262,9 +277,22 @@ def main():
                   max(2, args.repeats // 2), args.label, cold=True,
                   tokenizer=tokenizer)
 
-    n = telemetry.write_csv(csv_path)
-    if n:
+    # Write collected records (from daemon stream + local path)
+    if all_records:
+        keys = []
+        for row in all_records:
+            for k in row:
+                if k not in keys:
+                    keys.append(k)
+
+        with open(csv_path, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=keys)
+            w.writeheader()
+            w.writerows(all_records)
+        print(f"\n[Bench] Wrote {len(all_records)} timing records to {csv_path}")
         summarize(csv_path, os.path.join(RESULTS_DIR, f"{args.label}_summary.csv"))
+    else:
+        print(f"\n[Bench] No timing records collected")
 
     if topology:
         meta = os.path.join(RESULTS_DIR, f"{args.label}_topology.txt")
