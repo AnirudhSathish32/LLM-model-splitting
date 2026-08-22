@@ -17,11 +17,13 @@ What must be derived (and labelled as such in any writeup):
     downstream compute, estimated from each node's benchmarked ms/layer
     network time = roundtrip - estimated downstream compute
 """
-
+import sys
 import csv
 import os
 import threading
 import time
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 _enabled = False
 _records = []

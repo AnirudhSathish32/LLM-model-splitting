@@ -36,7 +36,7 @@ from collections import defaultdict
 
 import torch
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import perf_telemetry as telemetry
 from config import LocalConfig
