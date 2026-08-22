@@ -2,10 +2,9 @@ import torch
 import time
 import socket
 import struct
-import telemetry
 
 from model import Model
-
+import perf_telemetry as telemetry
 from networking.serialization import tensor_to_bytes, tensor_from_bytes, to_bytes, from_bytes
 from networking.protocol import send_message, read_message
 from config import (

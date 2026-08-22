@@ -517,6 +517,9 @@ def _run_local(query, local, session, on_token=None):
     # Generate
     print(f"[Local] Generating {query.tokens_to_generate} tokens (input: {input_len} tokens)...")
 
+    import perf_telemetry as _tel
+    _t_gen_start = time.time()
+
     if on_token:
         # Stream deltas as they are produced
         from transformers import TextIteratorStreamer
@@ -533,8 +536,24 @@ def _run_local(query, local, session, on_token=None):
         gen_thread.start()
 
         parts = []
+        _tok_idx = 0
         for chunk in streamer:
             parts.append(chunk)
+            if _tel.is_enabled():
+                _tel.record(
+                    session=query.session_id,
+                    token_index=_tok_idx,
+                    phase="prefill" if _tok_idx == 0 else "decode",
+                    input_tokens=input_len if _tok_idx == 0 else 1,
+                    context_tokens=input_len + _tok_idx,
+                    hidden_bytes=0,
+                    master_compute_ms=0,
+                    roundtrip_ms=0,
+                    step_ms=0,
+                    master_layers=0,
+                    path="local",
+                )
+                _tok_idx += 1
             try:
                 on_token(chunk)
             except Exception:
@@ -549,7 +568,27 @@ def _run_local(query, local, session, on_token=None):
                 do_sample=False,
             )
         new_tokens = outputs[0][input_len:]
+        n_generated = len(new_tokens)
         response = tokenizer.decode(new_tokens, skip_special_tokens=True)
+
+        # Record per-token telemetry from wall time
+        if _tel.is_enabled() and n_generated > 0:
+            _wall = (time.time() - _t_gen_start) * 1000.0
+            _per_tok = _wall / n_generated
+            for _i in range(n_generated):
+                _tel.record(
+                    session=query.session_id,
+                    token_index=_i,
+                    phase="prefill" if _i == 0 else "decode",
+                    input_tokens=input_len if _i == 0 else 1,
+                    context_tokens=input_len + _i,
+                    hidden_bytes=0,
+                    master_compute_ms=round(_per_tok, 4),
+                    roundtrip_ms=0.0,
+                    step_ms=round(_per_tok, 4),
+                    master_layers=0,
+                    path="local",
+                )
  
     return response
 

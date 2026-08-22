@@ -38,7 +38,7 @@ import torch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import telemetry
+import perf_telemetry as telemetry
 from config import LocalConfig
 from session import SessionManager
 from user_query import UserQuery, send_query, get_pipeline_info
